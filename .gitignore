@@ -8,7 +8,8 @@ reports/
 *.tsbuildinfo
 
 # 本地研究记录与提示文档 保留源码旁的正式说明和根 README 
-/specs/**/*.md
+/specs/
+/SPECS/
 
 # 下载的工具及命令行演示接收文件
 /tools/*.zip

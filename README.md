@@ -3,13 +3,12 @@
 基于标准 MoQ 的现代流媒体会话与媒体策略研发工程。面向直播、实时互动、桌面和游戏串流，
 支持浏览器与原生端的长期目标；P2P可选
 
-**当前是 P0a 传输与策略参考实现，还不能播放音视频。**
-Relay 转发到两个订阅端，以及 offer/accept/ack 双向协商。测试使用真实 WebSocket 网络连接，上游 QMux/MOQT 编解码，
-不是内存模拟；它也不是 QUIC 性能测试或独立实现互通认证。
+目前提供 MOQT-22 对象发布/订阅、本地 Relay 和 offer/accept/ack 双向会话协商，
+尚不支持音视频播放。参考传输使用 QMux/WebSocket。
 
 ## 快速运行
 
-需要 Node.js 24+，支持 **pnpm 和 npm**。已验证 pnpm 11.18.0；项目提供
+需要 Node.js 24+，支持 **pnpm 和 npm**。项目使用 pnpm 11.18.0，提供
 `pnpm-lock.yaml` 和 `package-lock.json`，安装时选用对应的锁文件。
 
 在本目录打开 PowerShell，使用 pnpm：
@@ -40,8 +39,6 @@ Demo 自动启动随机端口 Relay、建立发布/订阅连接，通过 MOQT �
 `handshake` 演示通过两个 MOQT 控制轨道交换 offer、accept、ack。响应端选择配置，发起端
 重新验证配置并发送 ACK，响应端收到 ACK 后进入 ACTIVE。成功输出两端均为 `ACTIVE`。
 失败的协商不会返回活动会话；连接关闭后，其协商结果也会失效。
-
-上游库会输出订阅及关闭诊断，不能把 `subscribe ...` 日志当作额外的协议能力。
 
 ## 分进程发布和订阅对象
 
@@ -93,26 +90,16 @@ npm run object -- subscribe received.bin nsp/probe
 | `src/browser.ts`   | 浏览器可打包 SDK 入口；WebTransport 路径尚未浏览器实测  |
 | `src/cli.ts`       | 独立发布/订阅探针                                       |
 
-现已加入 Rust workspace：`nsp-types`、`nsp-session` 和 `nsp-scheduler`，作为原生核心。
-TypeScript 保留为浏览器 SDK 及对象链路参考。原生 Rust 网络后端、浏览器播放器、
-HTTP/MSE 网关、LOC/MSF 媒体映射、音画同步、ABR 和 WebRTC 对比尚待实现。
-
 ## Rust 核心
 
-已检测 Rust 1.99.1（MSVC）。当前全 workspace 的 check 和 Clippy 已通过，15 项 Rust
-行为测试的代码通过类型检查；测试可执行文件因缺少 `link.exe` 而无法构建，尚未执行。
-Windows 需安装 Visual Studio Build Tools 的“使用 C++ 的桌面开发”，包含 MSVC x64/x86
-工具及 Windows SDK。安装后新开终端；如果 Cargo 未进入 PATH，可先执行：
+Rust workspace 包含共用类型、会话协商和媒体调度三个模块。需要 Rust 1.91+；
+Windows MSVC 目标需安装 Visual Studio 的“使用 C++ 的桌面开发”和 Windows SDK。
 
 ```powershell
-$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
-
-Rust 核心目前不依赖第三方库；会话能力使用结构化类型，JSON 线格式解析暂由 TypeScript
-参考端提供。原生传输适配器接入前将固定上游版本，不自写 MOQT/QUIC 握手。
 
 ## HTTP / HTTPS 设计
 
@@ -120,8 +107,3 @@ HTTPS 浏览器计划使用 MoQ/WebTransport + WebCodecs。普通远程 HTTP 浏
 媒体网关 + MSE。当前 WS 链路验证了 HTTP 兼容环境中的对象传输，**不等于完成 HTTP 视频播放**。
 WSS 可以由 TLS 网关终止，但当前参考服务仅允许本机 CLI，拒绝浏览器 Origin，尚不可公网部署。
 
-公共 API 注释使用中英双语，内部逻辑注释使用中文。`specs/` 中的 Markdown 为本地
-研发记录和提示文档，由 `.gitignore` 排除，不作为项目发布内容。
-
-源码、测试、README、构建配置及 Cargo/npm/pnpm 锁文件保留版本控制；依赖目录、
-构建产物、临时文件、本地配置和密钥不提交。环境配置示例可使用 `.env.example`。
