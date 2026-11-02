@@ -1,10 +1,40 @@
+# 本地依赖 编译产物和测试输出
 node_modules/
-tools/*.zip
-tools/*.exe
-tools/relay/
-dist/
-reports/
-.env
-*.pem
 target/
+dist/
+coverage/
+reports/
 .build-probe/
+*.tsbuildinfo
+
+# 本地研究记录与提示文档 保留源码旁的正式说明和根 README 
+/specs/**/*.md
+
+# 下载的工具及命令行演示接收文件
+/tools/*.zip
+/tools/*.exe
+/tools/*.dll
+/tools/relay/
+/received.bin
+
+# 本地配置和密钥；
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# 编辑器缓存 运行日志和系统临时文件 
+.vs/
+*.log
+*.tmp
+*.swp
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Cargo.lock、pnpm-lock.yaml、package-lock.json 和共享编辑器配置保留版本控制。
