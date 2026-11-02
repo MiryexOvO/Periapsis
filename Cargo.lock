@@ -493,16 +493,6 @@ dependencies = [
 
 [[package]]
 name = "kio"
-version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3033155c4fffcd86959a9ebdfbcadbed7ec4bfcc2fb545469778f791adf704eb"
-dependencies = [
- "loom",
- "smallvec",
-]
-
-[[package]]
-name = "kio"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef66d8bfe764db97f6a673f68ffe2ade561c27024b12d1d29b9e08d19a3e37ef"
@@ -605,7 +595,7 @@ dependencies = [
  "arrayvec",
  "bytes",
  "futures",
- "kio 0.6.3",
+ "kio",
  "moq-pattern",
  "num_enum",
  "rand",
@@ -614,7 +604,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "web-async",
- "web-transport-trait",
+ "web-transport-trait 0.4.0",
 ]
 
 [[package]]
@@ -648,6 +638,7 @@ dependencies = [
  "rustls",
  "tokio",
  "web-transport-quinn",
+ "web-transport-trait 0.5.2",
 ]
 
 [[package]]
@@ -1629,14 +1620,14 @@ dependencies = [
 
 [[package]]
 name = "web-transport-quinn"
-version = "0.12.0"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b494e7a90c7c576bac11d7506128cea266d63ed9a8b0be39269c7b9ea402a5e"
+checksum = "49dd1992a7738bdabf673590e6b5bee753422504d08c9eec82c691a40abe51ad"
 dependencies = [
  "bytes",
  "futures",
  "http",
- "kio 0.5.9",
+ "kio",
  "quinn",
  "rustls",
  "rustls-native-certs",
@@ -1645,7 +1636,7 @@ dependencies = [
  "tracing",
  "url",
  "web-transport-proto",
- "web-transport-trait",
+ "web-transport-trait 0.5.2",
 ]
 
 [[package]]
@@ -1653,6 +1644,15 @@ name = "web-transport-trait"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a916df726e858e8e6cc21e852129f59e6277d3a01bb2254c0506dcf829fdd5d"
+dependencies = [
+ "bytes",
+]
+
+[[package]]
+name = "web-transport-trait"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60221f03172c9e8e8d19d1c038c87ef2804d05f8a71264817f60a28bbd03edab"
 dependencies = [
  "bytes",
 ]

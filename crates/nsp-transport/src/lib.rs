@@ -2,6 +2,7 @@
 //! 基于已认证 QUIC 连接的原生 MOQT-22 适配器，复用上游协议实现。
 
 pub use moq_net as moq;
+mod compat;
 use std::time::Instant;
 use tokio::task::JoinHandle;
 use web_transport_quinn::{Session as Transport, quinn};
@@ -36,7 +37,7 @@ pub async fn accept(
     let (inner, driver) = moq::Server::new()
         .with_versions(version().into())
         .with_publisher(origin)
-        .accept(Instant::now(), Transport::raw(connection))
+        .accept(Instant::now(), compat::Compat(Transport::raw(connection)))
         .await?;
     Ok(Session {
         inner,
@@ -53,7 +54,7 @@ pub async fn connect(
     let (inner, driver) = moq::Client::new()
         .with_versions(version().into())
         .with_subscriber(origin)
-        .connect(Instant::now(), Transport::raw(connection))
+        .connect(Instant::now(), compat::Compat(Transport::raw(connection)))
         .await?;
     Ok(Session {
         inner,
