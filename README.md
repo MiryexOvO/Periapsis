@@ -101,6 +101,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+控制消息格式互通示例（需要 Cargo）：
+
+```powershell
+pnpm run interop
+```
+
+该命令通过本地进程管道连接 TypeScript 发起端与 Rust 响应端，交换 offer、accept、ack。
+它用于检查控制消息格式，不包含 QUIC 网络传输。
+
 ## HTTP / HTTPS 设计
 
 HTTPS 浏览器计划使用 MoQ/WebTransport + WebCodecs。普通远程 HTTP 浏览器计划使用
