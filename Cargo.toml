@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/nsp-types", "crates/nsp-session", "crates/nsp-scheduler"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "AGPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+nsp-types = { path = "crates/nsp-types" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
