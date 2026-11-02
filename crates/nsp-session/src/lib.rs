@@ -4,6 +4,7 @@
 //! NSP 能力协商与具体传输和编解码实现解耦，进入活动状态前需要显式网络确认。
 
 pub mod handshake;
+pub mod wire;
 
 use nsp_types::{
     AcceptedExtension, Agreement, Hello, MAX_CAPABILITIES, NSP_VERSION, NegotiationError,

@@ -3,6 +3,7 @@
 
 use crate::{negotiate, validate};
 use nsp_types::{Agreement, Hello, NegotiationError};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const MOQT_VERSION: &str = "moq-transport-22";
@@ -26,27 +27,39 @@ pub enum State {
     Closed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum Message {
+    #[serde(rename = "nsp.offer")]
     Offer {
+        #[serde(rename = "sessionId")]
         session_id: String,
+        #[serde(with = "crate::wire::hello")]
         hello: Hello,
     },
+    #[serde(rename = "nsp.accept")]
     Accept {
+        #[serde(rename = "sessionId")]
         session_id: String,
+        #[serde(with = "crate::wire::hello")]
         hello: Hello,
+        #[serde(with = "crate::wire::agreement")]
         agreement: Agreement,
     },
+    #[serde(rename = "nsp.ack")]
     Ack {
+        #[serde(rename = "sessionId")]
         session_id: String,
     },
+    #[serde(rename = "nsp.reject")]
     Reject {
+        #[serde(rename = "sessionId")]
         session_id: String,
     },
 }
 
 impl Message {
-    fn session_id(&self) -> &str {
+    pub(crate) fn session_id(&self) -> &str {
         match self {
             Self::Offer { session_id, .. }
             | Self::Accept { session_id, .. }
