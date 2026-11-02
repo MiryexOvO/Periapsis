@@ -1,22 +1,26 @@
 //! Shared NSP application types. No I/O and no MOQT wire redefinitions.
 //! NSP 共用的应用层类型，不执行 I/O，也不重新定义 MOQT 线格式。
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const NSP_VERSION: u32 = 1;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
 pub const MAX_CAPABILITIES: usize = 32;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Profile {
     Interactive,
     Live,
     Quality,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BufferPolicy {
+    #[serde(rename = "targetBufferMs")]
     pub target_ms: u32,
+    #[serde(rename = "maxBufferMs")]
     pub maximum_ms: u32,
 }
 
@@ -41,14 +45,14 @@ impl Profile {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Extension {
     pub id: String,
     pub version: u32,
     pub required: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub version: u32,
     /// Ordered by the local endpoint's preference.
@@ -58,18 +62,19 @@ pub struct Hello {
     pub extensions: Vec<Extension>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcceptedExtension {
     pub id: String,
     pub version: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Agreement {
     pub version: u32,
     pub profile: Profile,
     pub codecs: Vec<String>,
     pub extensions: Vec<AcceptedExtension>,
+    #[serde(flatten)]
     pub buffer: BufferPolicy,
 }
 

@@ -11,6 +11,8 @@ publish = false
 
 [workspace.dependencies]
 nsp-types = { path = "crates/nsp-types" }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.154"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

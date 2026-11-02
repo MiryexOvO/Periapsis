@@ -19,7 +19,8 @@
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "demo": "node --experimental-strip-types src/demo.ts",
     "object": "node --experimental-strip-types src/cli.ts",
-    "handshake": "node --experimental-strip-types src/handshake-demo.ts"
+    "handshake": "node --experimental-strip-types src/handshake-demo.ts",
+    "interop": "node --experimental-strip-types scripts/rust-interop.ts"
   },
   "name": "novastream",
   "engines": {
