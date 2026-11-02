@@ -120,6 +120,8 @@ HTTPS 浏览器计划使用 MoQ/WebTransport + WebCodecs。普通远程 HTTP 浏
 媒体网关 + MSE。当前 WS 链路验证了 HTTP 兼容环境中的对象传输，**不等于完成 HTTP 视频播放**。
 WSS 可以由 TLS 网关终止，但当前参考服务仅允许本机 CLI，拒绝浏览器 Origin，尚不可公网部署。
 
-完整边界、后续里程碑及对比基准见 [协议规格](specs/NSP-CORE.md)，固定依赖和标准兼容性
-记录见 [依赖基线](specs/DEPENDENCIES.md)，测试结果见 [验证记录](specs/VALIDATION.md)。
-公共 API 注释使用中英双语，内部逻辑注释使用中文，详见 [开发约定](specs/CONTRIBUTING.md)。
+公共 API 注释使用中英双语，内部逻辑注释使用中文。`specs/` 中的 Markdown 为本地
+研发记录和提示文档，由 `.gitignore` 排除，不作为项目发布内容。
+
+源码、测试、README、构建配置及 Cargo/npm/pnpm 锁文件保留版本控制；依赖目录、
+构建产物、临时文件、本地配置和密钥不提交。环境配置示例可使用 `.env.example`。
