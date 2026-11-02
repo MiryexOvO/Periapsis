@@ -1,0 +1,157 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@moq/net':
+        specifier: 0.4.7
+        version: 0.4.7(@zod/mini@4.6.7(zod@4.6.7))(zod@4.6.7)
+      '@moq/qmux':
+        specifier: 0.3.4
+        version: 0.3.4
+      ws:
+        specifier: 8.22.1
+        version: 8.22.1
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.0
+        version: 24.10.0
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+packages:
+
+  '@moq/net@0.4.7':
+    resolution: {integrity: sha512-klFav+4XZjR1GsgRJr6jNt1BuBNGc01+AivI8a1f/pBeKNcqL7t9k9xn5RP78Bprnf4H7BUgTi14vvexPCuTNA==}
+    peerDependencies:
+      '@zod/mini': ^4.5.0
+      zod: ^4.5.0
+
+  '@moq/pattern@0.2.1':
+    resolution: {integrity: sha512-NXlegs0abkYoIUkcxyJjnUHC1CGw8VkooAbuNKLK5AF0hCAyUWw1QNliHaLBty4K76qfrrvJK6cf7j31Z0KF0A==}
+
+  '@moq/qmux@0.3.4':
+    resolution: {integrity: sha512-6XxjqsK1bi2bdIZ7+g8gkHh3v6NOEArqb6IMtHokZI+wP4Y7OB45zHrxUe7v42pcf08RnfqfTkphxHgZfVLyPw==}
+
+  '@moq/signals@0.2.6':
+    resolution: {integrity: sha512-8L5y9cJSOVYGrHCZ20kcZsrmoxVXzl2dBQhsRj8H4zbbul70SmZcdeLG+O3JBP5W3tjo8EmLR+DOmh1/p7QQYw==}
+    peerDependencies:
+      '@types/react': ^19.2.17
+      react: ^19.3.0
+      solid-js: ^1.9.15
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      react:
+        optional: true
+      solid-js:
+        optional: true
+
+  '@moq/web-socket-stream@0.1.1':
+    resolution: {integrity: sha512-VKi/GE/CLqmbEZlgNbBLbAFk2pQTxT+KUD2DjCSoxqZxbS3KBe5BBZ0m3fila4fEGyll2JT5MmgEyVr4zkZEVA==}
+
+  '@types/node@24.10.0':
+    resolution: {integrity: sha512-qzQZRBqkFsYyaSWXuEHc2WR9c0a0CXwiE5FWUvn7ZM+vdy1uZLfCunD38UzhuB7YN/J11ndbDBcTmOdxJo9Q7A==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+
+  '@zod/mini@4.6.7':
+    resolution: {integrity: sha512-oLORzy4OERpr+gaITCsrCK9uDWd9lOCLG00fRZEJidVITLS5SQtifmzP6fBSFH9YxkXFoT6/o4bRZDq2tTHrog==}
+    peerDependencies:
+      zod: ^4.6.0
+
+  async-mutex@0.5.0:
+    resolution: {integrity: sha512-1A94B18jkJ3DYq284ohPxoXbfTA5HsQ7/Mf4DEhcyLx3Bz27Rh59iScbB6EPiP+B+joue6YCxcMXSbFC1tZKwA==}
+
+  bowser@2.15.0:
+    resolution: {integrity: sha512-xic6KSZglg/I4ymp45fdM4GWfYpBK79Fxd/TOvJktlaPgQqqDxvmGwOPZl2V0dyeS3Lj5c180bLhXF43iyAjZQ==}
+
+  tslib@2.9.1:
+    resolution: {integrity: sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==}
+
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  undici-types@7.16.0:
+    resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
+
+  ws@8.22.1:
+    resolution: {integrity: sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
+
+snapshots:
+
+  '@moq/net@0.4.7(@zod/mini@4.6.7(zod@4.6.7))(zod@4.6.7)':
+    dependencies:
+      '@moq/pattern': 0.2.1
+      '@moq/qmux': 0.3.4
+      '@moq/signals': 0.2.6
+      '@zod/mini': 4.6.7(zod@4.6.7)
+      async-mutex: 0.5.0
+      bowser: 2.15.0
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - '@types/react'
+      - react
+      - solid-js
+
+  '@moq/pattern@0.2.1': {}
+
+  '@moq/qmux@0.3.4':
+    dependencies:
+      '@moq/web-socket-stream': 0.1.1
+
+  '@moq/signals@0.2.6': {}
+
+  '@moq/web-socket-stream@0.1.1': {}
+
+  '@types/node@24.10.0':
+    dependencies:
+      undici-types: 7.16.0
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 24.10.0
+
+  '@zod/mini@4.6.7(zod@4.6.7)':
+    dependencies:
+      zod: 4.6.7
+
+  async-mutex@0.5.0:
+    dependencies:
+      tslib: 2.9.1
+
+  bowser@2.15.0: {}
+
+  tslib@2.9.1: {}
+
+  typescript@5.9.3: {}
+
+  undici-types@7.16.0: {}
+
+  ws@8.22.1: {}
+
+  zod@4.6.7: {}

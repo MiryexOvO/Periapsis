@@ -1,0 +1,28 @@
+{
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "@types/ws": "8.18.1",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@moq/net": "0.4.7",
+    "@moq/qmux": "0.3.4",
+    "ws": "8.22.1"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "dev": "node --experimental-strip-types src/server.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "demo": "node --experimental-strip-types src/demo.ts",
+    "object": "node --experimental-strip-types src/cli.ts",
+    "handshake": "node --experimental-strip-types src/handshake-demo.ts"
+  },
+  "name": "novastream",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@11.18.0"
+}
