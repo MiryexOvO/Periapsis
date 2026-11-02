@@ -184,3 +184,97 @@ impl<S: new::poll::RecvStream> old::poll::RecvStream for Compat<S> {
         self.0.poll_closed(cx).map(|r| r.map_err(Compat))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use old::{Error as _, poll::SendStream as _};
+
+    #[derive(Debug)]
+    struct TestError;
+    impl fmt::Display for TestError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("test reset")
+        }
+    }
+    impl std::error::Error for TestError {}
+    impl new::Error for TestError {
+        fn session_error(&self) -> Option<(u32, String)> {
+            Some((7, "test close".into()))
+        }
+        fn stream_error(&self) -> Option<u32> {
+            Some(91)
+        }
+    }
+    struct Sender {
+        pending: bool,
+        priority: i32,
+        reset: Option<u32>,
+    }
+    impl new::poll::SendStream for Sender {
+        type Error = TestError;
+        fn poll_write(
+            &mut self,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<Result<usize, TestError>> {
+            if self.pending {
+                self.pending = false;
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(bytes.len().min(2)))
+            }
+        }
+        fn set_priority(&mut self, priority: i32) {
+            self.priority = priority;
+        }
+        fn finish(&mut self) -> Result<(), TestError> {
+            Ok(())
+        }
+        fn reset(&mut self, code: u32) {
+            self.reset = Some(code);
+        }
+        fn poll_closed(&mut self, _: &mut Context<'_>) -> Poll<Result<(), TestError>> {
+            Poll::Ready(Err(TestError))
+        }
+    }
+
+    #[test]
+    fn pending_and_partial_write_preserve_the_unaccepted_bytes() {
+        let mut stream = Compat(Sender {
+            pending: true,
+            priority: 0,
+            reset: None,
+        });
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        let mut bytes = Bytes::from_static(b"abcd");
+        assert!(stream.poll_write_buf(&mut context, &mut bytes).is_pending());
+        assert_eq!(bytes.as_ref(), b"abcd");
+        assert!(matches!(
+            stream.poll_write_buf(&mut context, &mut bytes),
+            Poll::Ready(Ok(2))
+        ));
+        assert_eq!(bytes.as_ref(), b"cd");
+    }
+
+    #[test]
+    fn priorities_and_error_codes_survive_the_version_boundary() {
+        let mut stream = Compat(Sender {
+            pending: false,
+            priority: 0,
+            reset: None,
+        });
+        for priority in [0, 127, 255] {
+            stream.set_priority(priority);
+            assert_eq!(stream.0.priority, i32::from(priority));
+        }
+        stream.reset(91);
+        assert_eq!(stream.0.reset, Some(91));
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        let Poll::Ready(Err(error)) = stream.poll_closed(&mut context) else {
+            panic!("missing error");
+        };
+        assert_eq!(error.stream_error(), Some(91));
+        assert_eq!(error.session_error(), Some((7, "test close".into())));
+    }
+}
