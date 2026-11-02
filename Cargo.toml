@@ -19,3 +19,6 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+[profile.dev.package.ring]
+debug = 0

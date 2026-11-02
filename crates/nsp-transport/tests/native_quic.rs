@@ -57,13 +57,16 @@ async fn native_moqt22_delivers_an_object() -> Result<(), Box<dyn std::error::Er
         assert_eq!(subscriber.inner.version().as_str(), "moq-transport-22");
         assert_eq!(publisher.inner.version().as_str(), "moq-transport-22");
         let consumer = received.consume();
-        consumer.routed("nsp/native").await?;
+        consumer
+            .routed("nsp/native")
+            .await
+            .ok_or("missing broadcast route")?;
         let remote = consumer.request_broadcast("nsp/native").await?;
         let subscription =
             moq::track::Subscription::default().with_start(moq::track::Position::group(0));
         let mut reader = remote.track("probe")?.subscribe(subscription).await?;
         track.used().await?;
-        let payload = vec![0x5a_u8; 65536];
+        let payload: Vec<u8> = (0..65536).map(|i| (i % 251) as u8).collect();
         let mut group = track.append_group()?;
         group.write_frame(moq::Timestamp::ZERO, payload.clone())?;
         group.finish()?;

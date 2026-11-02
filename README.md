@@ -4,7 +4,7 @@
 支持浏览器与原生端的长期目标；P2P可选
 
 目前提供 MOQT-22 对象发布/订阅、本地 Relay 和 offer/accept/ack 双向会话协商，
-尚不支持音视频播放。参考传输使用 QMux/WebSocket。
+以及 Rust 原生 QUIC 直连适配，尚不支持音视频播放。浏览器参考传输使用 QMux/WebSocket。
 
 ## 快速运行
 
@@ -92,7 +92,7 @@ npm run object -- subscribe received.bin nsp/probe
 
 ## Rust 核心
 
-Rust workspace 包含共用类型、会话协商和媒体调度三个模块。需要 Rust 1.91+；
+Rust workspace 包含共用类型、会话协商、媒体调度和原生传输四个模块。需要 Rust 1.91+；
 Windows MSVC 目标需安装 Visual Studio 的“使用 C++ 的桌面开发”和 Windows SDK。
 
 ```powershell
@@ -100,6 +100,15 @@ cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+单独运行原生 QUIC 对象传输检查：
+
+```powershell
+cargo test -p nsp-transport --test native_quic
+```
+
+该测试使用本机 UDP、TLS 证书校验和固定的 MOQT-22 ALPN，比较发送与接收的对象内容。
+它不包含 Relay 转发、音视频播放或独立 MoQ 实现之间的互通验证。
 
 控制消息格式互通示例（需要 Cargo）：
 
