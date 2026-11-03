@@ -6,6 +6,22 @@ const demo = await startVideoDemo(0, quic ? "webtransport" : "websocket");
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 try {
   const first = await browser.newPage();
+  await first.addInitScript(() => {
+    const save = (wire: unknown) => { Object.assign(globalThis, { __periWire: wire }); };
+    const NativeTransport = globalThis.WebTransport;
+    if (NativeTransport) globalThis.WebTransport = class extends NativeTransport {
+      constructor(...args: ConstructorParameters<typeof WebTransport>) { super(...args); save(this); }
+    };
+    const NativeSocket = globalThis.WebSocket;
+    globalThis.WebSocket = class extends NativeSocket {
+      constructor(url: string | URL, protocols?: string | string[]) { super(url, protocols); save(this); }
+    };
+    const platform = globalThis as unknown as { WebSocketStream?: new (...args: unknown[]) => object };
+    const NativeStream = platform.WebSocketStream;
+    if (NativeStream) platform.WebSocketStream = class extends NativeStream {
+      constructor(...args: unknown[]) { super(...args); save(this); }
+    };
+  });
   await first.goto(demo.url); await first.click("#connect");
   await first.waitForFunction(() => Number(document.querySelector<HTMLElement>("#metrics")?.dataset.frames) >= 30, undefined, { timeout: 15000 });
   const late = await browser.newPage(); await late.goto(demo.url); await late.click("#connect");
@@ -22,6 +38,14 @@ try {
     if (Number(stats.audioBufferMs) > 360) throw new Error("unbounded audio buffer");
     console.log(`Verified Opus playback: packets=${stats.audioPackets}, buffer=${stats.audioBufferMs}ms, scheduled video skew=${stats.skewMs}ms`);
   }
+  const previousGeneration = Number(await first.locator("#metrics").getAttribute("data-generation"));
+  await first.evaluate(() => { (globalThis as unknown as { __periWire: { close(): void } }).__periWire.close(); });
+  await first.waitForFunction(previous => {
+    const stats = document.querySelector<HTMLElement>("#metrics")!.dataset;
+    return Number(stats.generation) > previous && Number(stats.frames) >= 20 && Number(stats.audioPackets) >= 30 && stats.audioState === "running";
+  }, previousGeneration, { timeout: 15000 });
+  await first.evaluate(() => { const state = globalThis as unknown as { __periWire: unknown; __periActive: unknown }; state.__periActive = state.__periWire; });
+  console.log("Verified automatic media reconnect after a real transport disconnect");
   await first.click("#mute");
   if (await first.locator("#mute").textContent() !== "取消静音") throw new Error("mute failed");
   if (quic) {
@@ -54,6 +78,11 @@ try {
   await first.waitForFunction(previous => Number(document.querySelector<HTMLElement>("#metrics")?.dataset.keys) > Number(previous), before, { timeout: 5000 });
   await mkdir("reports", { recursive: true }); await first.screenshot({ path: "reports/video.png" });
   console.log(JSON.stringify({ first: await first.locator("#metrics").textContent(), lateJoin: await late.locator("#metrics").textContent(), status: await first.locator("#status").textContent() }));
+  await first.evaluate(() => { (globalThis as unknown as { __periActive: { close(): void } }).__periActive.close(); });
+  await first.waitForFunction(() => document.querySelector("#status")!.textContent!.includes("重连"));
+  const stoppedGeneration = await first.locator("#metrics").getAttribute("data-generation");
   await first.click("#stop");
+  await first.waitForTimeout(900);
+  if (await first.locator("#metrics").getAttribute("data-generation") !== stoppedGeneration) throw new Error("reconnected after stop");
   if (await first.locator("#status").textContent() !== "已停止") throw new Error("stop failed");
 } finally { await browser.close(); await demo.close(); }

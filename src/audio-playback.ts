@@ -7,12 +7,14 @@ export class AudioPlayback {
   readonly context = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
   readonly clock = new PlaybackClock();
   private readonly gain = this.context.createGain();
-  private sources = new Set<AudioBufferSourceNode>();
+  private sources = new Map<AudioBufferSourceNode, number>();
   packets = 0;
   energy = 0;
   closed = false;
   constructor() { this.gain.gain.value = 0.2; this.gain.connect(this.context.destination); void this.context.resume(); }
   set muted(value: boolean) { this.gain.gain.value = value ? 0 : 0.2; }
+  get muted() { return this.gain.gain.value === 0; }
+  reset() { this.clear(); this.clock.reset(); this.packets = 0; this.energy = 0; }
   schedule(data: AudioData) {
     try {
       if (this.closed) return;
@@ -30,13 +32,13 @@ export class AudioPlayback {
       }
       if (at < now - 0.02 || this.sources.size >= 24) return;
       const source = this.context.createBufferSource(); source.buffer = buffer;
-      source.connect(this.gain); this.sources.add(source);
+      source.connect(this.gain); this.sources.set(source, Math.max(now, at) + buffer.duration);
       source.onended = () => { this.sources.delete(source); source.disconnect(); };
       source.start(Math.max(now, at)); this.packets++;
     } finally { data.close(); }
   }
   get mediaTime() { return this.clock.mediaTime(this.context.currentTime); }
-  get bufferedMs() { return this.sources.size * 20; }
-  private clear() { for (const source of this.sources) { source.stop(); source.disconnect(); } this.sources.clear(); }
+  get bufferedMs() { return Math.round(Math.max(0, ...Array.from(this.sources.values(), end => end - this.context.currentTime)) * 1000); }
+  private clear() { for (const source of this.sources.keys()) { source.stop(); source.disconnect(); } this.sources.clear(); }
   close() { if (this.closed) return; this.closed = true; this.clear(); void this.context.close(); }
 }

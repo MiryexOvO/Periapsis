@@ -13,23 +13,28 @@ import * as Msf from "./media-catalog.ts";
 import { parseOggOpus } from "./opus.ts";
 import { parseIvf } from "./ivf.ts";
 import { connect } from "./transport.ts";
+import type { MediaSource } from "./rtmp-source.ts";
 import { startRelay } from "./relay.ts";
 
 /** Start a loopback-only test-video publisher and browser viewer.
  * 启动仅本机可访问的测试视频发布端与浏览器播放器。
  */
-export async function startVideoDemo(port = 8080, transport: "websocket" | "webtransport" = "websocket") {
+export async function startVideoDemo(port = 8080, transport: "websocket" | "webtransport" = "websocket", source?: MediaSource) {
   const root = fileURLToPath(new URL("../", import.meta.url));
   await mkdir(new URL("../dist/", import.meta.url), { recursive: true });
-  const input = fileURLToPath(new URL("../dist/test.ivf", import.meta.url));
-  const ffmpeg = spawnSync(process.env.PERI_FFMPEG ?? "ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "3", "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8", "-g", "30", "-auto-alt-ref", "0", "-b:v", "700k", "-f", "ivf", input], { cwd: root, windowsHide: true, encoding: "utf8" });
-  if (ffmpeg.error || ffmpeg.status !== 0) throw new Error(`FFmpeg VP8 generation failed: ${ffmpeg.error?.message ?? ffmpeg.stderr}`);
-  const video = parseIvf(await readFile(input));
-  const audioInput = fileURLToPath(new URL("../dist/test.opus", import.meta.url));
-  const audioResult = spawnSync(process.env.PERI_FFMPEG ?? "ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "3.2", "-c:a", "libopus", "-ac", "1", "-frame_duration", "20", "-b:a", "64k", audioInput], { cwd: root, windowsHide: true, encoding: "utf8" });
-  if (audioResult.error || audioResult.status !== 0) throw new Error("FFmpeg Opus generation failed");
-  const audioPackets = parseOggOpus(await readFile(audioInput)).slice(0, 150);
-  if (audioPackets.length !== 150) throw new Error("missing Opus packets");
+  let video: ReturnType<typeof parseIvf> | undefined;
+  let audioPackets: Uint8Array[] = [];
+  if (!source) {
+    const input = fileURLToPath(new URL("../dist/test.ivf", import.meta.url));
+    const ffmpeg = spawnSync(process.env.PERI_FFMPEG ?? "ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "3", "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8", "-g", "30", "-auto-alt-ref", "0", "-b:v", "700k", "-f", "ivf", input], { cwd: root, windowsHide: true, encoding: "utf8" });
+    if (ffmpeg.error || ffmpeg.status !== 0) throw new Error(`FFmpeg VP8 generation failed: ${ffmpeg.error?.message ?? ffmpeg.stderr}`);
+    video = parseIvf(await readFile(input));
+    const audioInput = fileURLToPath(new URL("../dist/test.opus", import.meta.url));
+    const audioResult = spawnSync(process.env.PERI_FFMPEG ?? "ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "3.2", "-c:a", "libopus", "-ac", "1", "-frame_duration", "20", "-b:a", "64k", audioInput], { cwd: root, windowsHide: true, encoding: "utf8" });
+    if (audioResult.error || audioResult.status !== 0) throw new Error("FFmpeg Opus generation failed");
+    audioPackets = parseOggOpus(await readFile(audioInput)).slice(0, 150);
+    if (audioPackets.length !== 150) throw new Error("missing Opus packets");
+  }
   if (transport === "webtransport") {
     const result = spawnSync("cargo", ["build", "--locked", "-p", "peri-transport", "--example", "webtransport_media"], { cwd: root, stdio: "inherit", windowsHide: true });
     if (result.error || result.status !== 0) throw new Error("Rust WebTransport gateway build failed");
@@ -41,7 +46,7 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
   const server = createServer((req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Referrer-Policy", "no-referrer");
-    if (req.url === "/") { res.setHeader("Content-Type", "text/html; charset=utf-8"); res.end(html); }
+    if (req.url === "/") { res.setHeader("Content-Type", "text/html; charset=utf-8"); res.end(source ? html.toString().replace("测试音视频 · 640 × 360 · VP8 + Opus · 880 Hz 测试音", "推流直播 · H.264 + AAC · 编码数据直接转发").replace("测试视频", "推流直播") : html); }
     else if (req.url === "/player.js") { res.setHeader("Content-Type", "text/javascript"); res.end(script); }
     else if (req.url === "/config") { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(config)); }
     else { res.writeHead(404); res.end(); }
@@ -62,9 +67,9 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
   const encoded = new Loc.Producer(track);
   const audioTrack = broadcast.createTrack("audio", { maxAge: Moq.Time.Milli(2000) });
   const audioEncoded = new Loc.Producer(audioTrack);
-  const group = catalog.appendGroup();
-  const catalogBytes = Msf.encode({ tracks: [{ name: "video", packaging: "loc", role: "video", codec: "vp8", width: video.width, height: video.height, framerate: video.framerate, isLive: true }, { name: "audio", packaging: "loc", role: "audio", codec: "opus", samplerate: 48000, channelConfig: "1", isLive: true }] });
-  group.writeFrame({ payload: catalogBytes, timestamp: Moq.Time.Timestamp.now() }); group.close();
+  const catalogBytes = Msf.encode(source?.catalog ?? { tracks: [{ name: "video", packaging: "loc", role: "video", codec: "vp8", width: video!.width, height: video!.height, framerate: video!.framerate, isLive: true }, { name: "audio", packaging: "loc", role: "audio", codec: "opus", samplerate: 48000, channelConfig: "1", isLive: true }] });
+  const writeCatalog = () => { const group = catalog.appendGroup(); group.writeFrame({ payload: catalogBytes, timestamp: Moq.Time.Timestamp.now() }); group.close(); };
+  writeCatalog();
   broadcast.announce();
   let index = 0, cycle = 0, stopped = false;
   let gateway: ReturnType<typeof spawn> | undefined;
@@ -89,10 +94,12 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
       const loc = new Loc.Format(name);
       while (!stopped) {
         const group = await subscription.recvGroup(); if (!group) break;
+        let firstObject = true;
         try { for (;;) {
           const frame = await group.readFrame(); if (!frame || stopped) break;
           const media = loc.decode(frame.payload)[0]!;
-          const message = JSON.stringify({ track: name, payload: Buffer.from(frame.payload).toString("base64"), timestamp: media.timestamp, keyframe: name === "audio" ? media.timestamp % 1_000_000 === 0 : (media.payload[0]! & 1) === 0 }) + "\n";
+          const message = JSON.stringify({ track: name, payload: Buffer.from(frame.payload).toString("base64"), timestamp: media.timestamp, keyframe: firstObject }) + "\n";
+          firstObject = false;
           if (!child.stdin!.write(message)) await once(child.stdin!, "drain");
         } } finally { group.close(); }
       }
@@ -104,19 +111,21 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
       throw error;
     }
   }
+  // 定期发布当前目录，使取消订阅后的新观众也能取得完整配置。
+  const catalogTimer = setInterval(writeCatalog, 1000);
   const started = performance.now();
-  let timer: ReturnType<typeof setTimeout>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const tick = () => {
     if (stopped) return;
-    const frame = video.frames[index]!;
-    encoded.encode(frame.payload, Moq.Time.Micro(frame.timestamp + cycle * video.duration), frame.keyframe);
-    if (++index === video.frames.length) { index = 0; cycle++; }
-    const next = cycle * video.duration + video.frames[index]!.timestamp;
+    const frame = video!.frames[index]!;
+    encoded.encode(frame.payload, Moq.Time.Micro(frame.timestamp + cycle * video!.duration), frame.keyframe);
+    if (++index === video!.frames.length) { index = 0; cycle++; }
+    const next = cycle * video!.duration + video!.frames[index]!.timestamp;
     timer = setTimeout(tick, Math.max(0, started + next / 1000 - performance.now()));
   };
-  tick();
+  if (!source) tick();
   let audioIndex = 0, audioCycle = 0;
-  let audioTimer: ReturnType<typeof setTimeout>;
+  let audioTimer: ReturnType<typeof setTimeout> | undefined;
   const audioTick = () => {
     if (stopped) return;
     const timestamp = (audioCycle * 150 + audioIndex) * 20000;
@@ -124,6 +133,13 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
     if (++audioIndex === 150) { audioIndex = 0; audioCycle++; }
     audioTimer = setTimeout(audioTick, Math.max(0, started + (audioCycle * 150 + audioIndex) * 20 - performance.now()));
   };
-  audioTick();
-  return { url, async close() { stopped = true; clearTimeout(timer); clearTimeout(audioTimer); audioEncoded.close(); encoded.close(); catalog.close(); broadcast.close(); publisher.close(); gateway?.kill(); await relay.close(); await new Promise<void>(resolve => server.close(() => resolve())); } };
+  if (!source) audioTick();
+  if (source) void (async () => {
+    for await (const frame of source.frames) {
+      if (stopped) break;
+      (frame.track === "video" ? encoded : audioEncoded).encode(frame.payload, Moq.Time.Micro(frame.timestamp), frame.keyframe);
+    }
+  })().catch(error => { if (!stopped) console.error("RTMP media input failed:", error.message); void close(); });
+  async function close() { if (stopped) return; stopped = true; source?.close(); clearInterval(catalogTimer); clearTimeout(timer); clearTimeout(audioTimer); audioEncoded.close(); encoded.close(); catalog.close(); broadcast.close(); publisher.close(); gateway?.kill(); await relay.close(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  return { url, close };
 }

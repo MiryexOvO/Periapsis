@@ -8,9 +8,12 @@ export const MAX_OBJECT_BYTES = 1024 * 1024;
 
 /** Pin draft-22 and reject silent moq-lite negotiation. QMux is a compatibility transport. */
 /** 固定 draft-22，拒绝静默切换到 moq-lite；QMux 提供兼容传输。 */
-export async function connect(url: URL, role: "publish" | "subscribe" | "duplex", timeoutMs = 5000, certificateHash?: string) {
+export async function connect(url: URL, role: "publish" | "subscribe" | "duplex", timeoutMs = 5000, certificateHash?: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const origin = new Moq.Origin.Producer();
   let transport: WebTransport | undefined;
+  const abort = () => transport?.close();
+  signal?.addEventListener("abort", abort, { once: true });
   try {
     if (url.protocol === "ws:" || url.protocol === "wss:") {
       transport = new QMux(url, { protocols: [QMUX_PROTOCOL], requireProtocol: true });
@@ -32,7 +35,7 @@ export async function connect(url: URL, role: "publish" | "subscribe" | "duplex"
       })]);
     } finally { clearTimeout(timer); }
     const connection = await Moq.Connection.connect({
-      url, transport, signal: AbortSignal.timeout(timeoutMs),
+      url, transport, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       ...(role !== "subscribe" ? { publish: origin.consume() } : {}),
       ...(role !== "publish" ? { consume: origin } : {}),
     });
@@ -45,7 +48,7 @@ export async function connect(url: URL, role: "publish" | "subscribe" | "duplex"
     transport?.close();
     origin.close();
     throw error;
-  }
+  } finally { signal?.removeEventListener("abort", abort); }
 }
 export function publishTrack(origin: Moq.Origin.Producer, path: string, trackName: string) {
   const broadcast = origin.createBroadcast(Moq.Path.from(path));
