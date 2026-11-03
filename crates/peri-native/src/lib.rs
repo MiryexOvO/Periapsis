@@ -1,6 +1,7 @@
 //! Experimental PERI native subscriber/publisher over QUIC.
 //! 实验原生 PERI 发布订阅：独立 ALPN、控制封装和对象流，不提供公网鉴权。
 
+pub mod media;
 mod wire;
 use peri_types::{Agreement, Hello};
 pub use quinn;
@@ -86,6 +87,7 @@ pub struct Session {
     guard: ConnectionGuard,
     agreement: Agreement,
     publisher: bool,
+    send_slots: tokio::sync::Semaphore,
     _control: (quinn::SendStream, quinn::RecvStream),
 }
 impl Session {
@@ -101,12 +103,16 @@ impl Session {
 
     /// Send a single object on its own unidirectional stream within a time budget.
     /// 在独立单向流发送一个对象；超时中止该流，调用方决定后续依赖恢复。
-    pub async fn send(&mut self, object: &Object, budget: Duration) -> Result<(), Error> {
+    pub async fn send(&self, object: &Object, budget: Duration) -> Result<(), Error> {
         if !self.publisher {
             return Err(Error::Protocol("subscriber cannot publish"));
         }
-        let bytes = wire::encode_object(object)?;
         let deadline = tokio::time::Instant::now() + budget;
+        let _slot = tokio::time::timeout_at(deadline, self.send_slots.acquire())
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(transport)?;
+        let bytes = wire::encode_object(object)?;
         let stream = tokio::time::timeout_at(deadline, self.guard.0.open_uni())
             .await
             .map_err(|_| Error::Timeout)?
@@ -210,6 +216,7 @@ pub async fn subscribe(
             guard,
             agreement,
             publisher: false,
+            send_slots: tokio::sync::Semaphore::new(8),
             _control: (send, recv),
         })
     })
@@ -260,6 +267,7 @@ pub async fn accept(
             guard,
             agreement,
             publisher: true,
+            send_slots: tokio::sync::Semaphore::new(8),
             _control: (send, recv),
         })
     })

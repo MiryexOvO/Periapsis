@@ -5,6 +5,107 @@ use std::{sync::Arc, time::Duration};
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 const BUDGET: Duration = Duration::from_secs(3);
 #[tokio::test]
+async fn media_catalog_and_dependency_frames_cross_real_quic() -> Result<(), TestError> {
+    use peri_native::media::{
+        Catalog, DecodeBuffer, Event, Frame, FrameKind, Publisher, Subscriber, Track, TrackKind,
+    };
+    let pair = pair(ALPN).await?;
+    let (publisher, subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/media", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/media", BUDGET),
+    )?;
+    let agreement = subscriber.agreement().unwrap().clone();
+    let catalog = Catalog {
+        tracks: vec![Track {
+            id: 1,
+            kind: TrackKind::Video,
+            codec: "video/av1".into(),
+            init: vec![0x81, 0x00],
+            width: Some(1920),
+            height: Some(1080),
+            sample_rate: None,
+            channels: None,
+        }],
+    };
+    let (publisher, mut subscriber) = tokio::try_join!(
+        Publisher::new(publisher, catalog.clone(), BUDGET),
+        Subscriber::new(subscriber, BUDGET)
+    )?;
+    assert_eq!(subscriber.catalog(), &catalog);
+    let mut buffer = DecodeBuffer::new(catalog, &agreement, 1024 * 1024, 8)?;
+    for sequence in [2, 1] {
+        let frame = Frame {
+            track: 1,
+            sequence,
+            timestamp_us: sequence * 33333,
+            duration_us: 33333,
+            kind: if sequence == 1 {
+                FrameKind::Key
+            } else {
+                FrameKind::Reference
+            },
+            dependencies: if sequence == 1 { vec![] } else { vec![1] },
+            payload: vec![sequence as u8; 4096],
+        };
+        let (_, received) =
+            tokio::try_join!(publisher.send(&frame, BUDGET), subscriber.recv(BUDGET))?;
+        assert_eq!(received, frame);
+        let now = std::time::Instant::now();
+        buffer.push(received, now, now + Duration::from_millis(200))?;
+    }
+    let now = std::time::Instant::now();
+    assert!(matches!(
+        buffer.next(now),
+        Some(Event::Decode(Frame { sequence: 1, .. }))
+    ));
+    assert!(buffer.next(now).is_none());
+    buffer.decoded(1, now)?;
+    assert!(matches!(
+        buffer.next(now),
+        Some(Event::Decode(Frame { sequence: 2, .. }))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn objects_can_be_sent_concurrently_without_global_stream_ordering() -> Result<(), TestError>
+{
+    let pair = pair(ALPN).await?;
+    let (publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET),
+    )?;
+    let objects: Vec<_> = (0..3)
+        .map(|sequence| Object {
+            sequence,
+            timestamp_us: sequence * 20000,
+            duration_us: 20000,
+            independent: true,
+            payload: vec![sequence as u8; 65536],
+        })
+        .collect();
+    let send = async {
+        tokio::try_join!(
+            publisher.send(&objects[0], BUDGET),
+            publisher.send(&objects[1], BUDGET),
+            publisher.send(&objects[2], BUDGET)
+        )?;
+        Ok::<_, Error>(())
+    };
+    let receive = async {
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            received.push(subscriber.recv(BUDGET).await?);
+        }
+        received.sort_by_key(|object| object.sequence);
+        Ok::<_, Error>(received)
+    };
+    let (_, received) = tokio::try_join!(send, receive)?;
+    assert_eq!(received, objects);
+    Ok(())
+}
+
+#[tokio::test]
 async fn raw_peer_cannot_bypass_extension_preface_length_or_ack_validation() -> Result<(), TestError>
 {
     for scenario in 0..4 {
@@ -143,7 +244,7 @@ async fn pair(alpn: &[u8]) -> Result<Pair, TestError> {
 async fn independent_protocol_negotiates_and_transfers_exact_objects() -> Result<(), TestError> {
     tokio::time::timeout(Duration::from_secs(10), async {
         let pair = pair(ALPN).await?;
-        let (mut publisher, mut subscriber) = tokio::try_join!(
+        let (publisher, mut subscriber) = tokio::try_join!(
             peri_native::accept(pair.incoming.clone(), hello(), "live/game/video", BUDGET),
             peri_native::subscribe(pair.outgoing.clone(), hello(), "live/game/video", BUDGET),
         )?;
@@ -161,6 +262,7 @@ async fn independent_protocol_negotiates_and_transfers_exact_objects() -> Result
                 tokio::try_join!(publisher.send(&object, BUDGET), subscriber.recv(BUDGET))?;
             assert_eq!(received, object);
         }
+        let mut publisher = publisher;
         assert!(publisher.recv(BUDGET).await.is_err());
         assert!(
             subscriber
@@ -247,7 +349,7 @@ async fn enforces_alpn_and_handshake_deadline() -> Result<(), TestError> {
 async fn truncated_slow_object_is_stopped_and_next_object_remains_receivable()
 -> Result<(), TestError> {
     let pair = pair(ALPN).await?;
-    let (mut publisher, mut subscriber) = tokio::try_join!(
+    let (publisher, mut subscriber) = tokio::try_join!(
         peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
         peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET),
     )?;
