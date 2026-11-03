@@ -159,6 +159,22 @@ async fn push_publish_relay_fans_out_and_late_join_waits_for_key() -> Result<(),
     source.send(&recovery, BUDGET).await?;
     assert_eq!(first_viewer.recv(BUDGET).await?, recovery);
     assert_eq!(second_viewer.recv(BUDGET).await?, recovery);
+    // A subscriber cancels one large object while its healthy sibling continues.
+    let mut cancelled = frame(4, FrameKind::Key, vec![]);
+    cancelled.payload = vec![7; 1024 * 1024 - 68];
+    source.send(&cancelled, BUDGET).await?;
+    let mut raw = tokio::time::timeout(BUDGET, second.outgoing.accept_uni()).await??;
+    raw.stop(1u32.into())?;
+    assert_eq!(first_viewer.recv(BUDGET).await?, cancelled);
+    let recovered = frame(5, FrameKind::Key, vec![]);
+    source.send(&recovered, BUDGET).await?;
+    assert_eq!(first_viewer.recv(BUDGET).await?, recovered);
+    assert_eq!(second_viewer.recv(BUDGET).await?, recovered);
+    assert_eq!(relay.viewers(), 2);
+    let resumed = frame(6, FrameKind::Reference, vec![5]);
+    source.send(&resumed, BUDGET).await?;
+    assert_eq!(first_viewer.recv(BUDGET).await?, resumed);
+    assert_eq!(second_viewer.recv(BUDGET).await?, resumed);
     drop(source);
     assert!(tokio::time::timeout(BUDGET, ingest_task).await??.is_err());
     assert!(tokio::time::timeout(BUDGET, first_task).await??.is_err());
@@ -540,5 +556,106 @@ async fn truncated_slow_object_is_stopped_and_next_object_remains_receivable()
     };
     let (_, received) = tokio::try_join!(publisher.send(&object, BUDGET), subscriber.recv(BUDGET))?;
     assert_eq!(received, object);
+    Ok(())
+}
+#[tokio::test]
+async fn live_object_expiry_and_reset_are_local_but_malformed_framing_is_not()
+-> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET),
+    )?;
+    let mut slow = pair.incoming.open_uni().await?;
+    slow.write_all(&[0]).await?;
+    assert_eq!(
+        subscriber
+            .recv_live(BUDGET, Duration::from_millis(30))
+            .await?,
+        None
+    );
+    assert_eq!(
+        tokio::time::timeout(BUDGET, slow.stopped()).await??,
+        Some(1u32.into())
+    );
+    for code in [1u32, 2] {
+        let mut cancelled = pair.incoming.open_uni().await?;
+        cancelled.write_all(&[0]).await?;
+        cancelled.reset(code.into())?;
+        let result = subscriber
+            .recv_live(BUDGET, Duration::from_millis(100))
+            .await;
+        if code == 1 {
+            assert_eq!(result?, None);
+        } else {
+            assert!(matches!(result, Err(Error::Io(_))));
+        }
+    }
+    let mut invalid = pair.incoming.open_uni().await?;
+    let mut header = vec![0; 25];
+    header[20] = 2;
+    invalid.write_all(&header).await?;
+    invalid.finish()?;
+    assert!(matches!(
+        subscriber
+            .recv_live(BUDGET, Duration::from_millis(100))
+            .await,
+        Err(Error::Protocol("object header"))
+    ));
+    let object = Object {
+        sequence: 9,
+        timestamp_us: 0,
+        duration_us: 20000,
+        independent: true,
+        payload: vec![42],
+    };
+    let (_, received) = tokio::try_join!(
+        publisher.send(&object, BUDGET),
+        subscriber.recv_live(BUDGET, Duration::from_millis(100))
+    )?;
+    assert_eq!(received, Some(object));
+    assert!(subscriber.agreement().is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn queued_object_receipts_bound_concurrency_and_release_slots() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET),
+    )?;
+    let mut receipts = Vec::new();
+    for sequence in 1..=8 {
+        let object = Object {
+            sequence,
+            timestamp_us: sequence * 20000,
+            duration_us: 20000,
+            independent: true,
+            payload: vec![42],
+        };
+        receipts.push(publisher.start_send(&object, BUDGET).await?);
+        assert_eq!(subscriber.recv(BUDGET).await?, object);
+    }
+    let ninth = Object {
+        sequence: 9,
+        timestamp_us: 180000,
+        duration_us: 20000,
+        independent: true,
+        payload: vec![43],
+    };
+    assert!(matches!(
+        publisher
+            .start_send(&ninth, Duration::from_millis(30))
+            .await,
+        Err(Error::Timeout)
+    ));
+    receipts.remove(0).finish().await?;
+    let pending = publisher.start_send(&ninth, BUDGET).await?;
+    assert_eq!(subscriber.recv(BUDGET).await?, ninth);
+    pending.finish().await?;
+    for receipt in receipts {
+        receipt.finish().await?;
+    }
     Ok(())
 }

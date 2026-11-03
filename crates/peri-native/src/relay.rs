@@ -84,7 +84,7 @@ impl Relay {
     pub fn new(catalog: Catalog, limits: Limits) -> Result<Self, Error> {
         let cache_bound = limits
             .queued_frames
-            .checked_add(1)
+            .checked_add(4)
             .and_then(|frames| frames.checked_mul(limits.viewers))
             .and_then(|frames| frames.checked_mul(limits.frame_bytes));
         if cache_bound.is_none_or(|bytes| bytes > 128 * 1024 * 1024)
@@ -201,11 +201,28 @@ impl Relay {
         let operation = async {
             let publisher = Publisher::new(session, self.catalog.clone(), setup_budget).await?;
             let mut forwarded = VecDeque::<(u64, u16)>::new();
+            let mut sends = tokio::task::JoinSet::new();
+            let mut recovery_points = HashMap::<u16, u64>::new();
             loop {
-                let item = receiver
-                    .recv()
-                    .await
-                    .ok_or(Error::Protocol("relay closed"))?;
+                let item = tokio::select! {
+                    biased;
+                    completed = sends.join_next(), if !sends.is_empty() => {
+                        let (track, sequence, result) = completed.expect("pending send").map_err(crate::transport)?;
+                        match result {
+                            Ok(()) => {},
+                            Err(Error::Timeout | Error::ObjectAborted) => {
+                                // A late failure from an older GOP must not invalidate a newer keyframe.
+                                if recovery_points.get(&track).is_none_or(|key| *key <= sequence) {
+                                    forwarded.retain(|(_, id)| *id != track);
+                                }
+                            },
+                            Err(error) => return Err(error),
+                        }
+                        continue;
+                    }
+                    item = receiver.recv() => item,
+                };
+                let item = item.ok_or(Error::Protocol("relay closed"))?;
                 let frame = &item.frame;
                 let deadline = item.received + residence;
                 let ready = frame
@@ -213,13 +230,27 @@ impl Relay {
                     .iter()
                     .all(|id| forwarded.contains(&(*id, frame.track)));
                 let now = Instant::now();
-                if deadline <= now || !ready {
+                if deadline <= now || !ready || sends.len() >= 4 {
                     if frame.kind != FrameKind::Disposable {
                         forwarded.retain(|(_, track)| *track != frame.track);
                     }
                     continue;
                 }
-                publisher.send(frame, deadline - now).await?;
+                match publisher.start_send(frame, deadline - now).await {
+                    Ok(send) => {
+                        let track = frame.track;
+                        let sequence = frame.sequence;
+                        sends.spawn(async move { (track, sequence, send.finish().await) });
+                        if matches!(frame.kind, FrameKind::Key | FrameKind::Audio) {
+                            recovery_points.insert(track, sequence);
+                        }
+                    }
+                    Err(Error::Timeout | Error::ObjectAborted) => {
+                        forwarded.retain(|(_, id)| *id != frame.track);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
                 if frame.kind != FrameKind::Disposable {
                     forwarded.push_back((frame.sequence, frame.track));
                     if forwarded.len() > 128 {

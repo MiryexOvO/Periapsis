@@ -22,6 +22,8 @@ pub enum Error {
     Io(std::io::Error),
     Json(serde_json::Error),
     Timeout,
+    /// The peer cancelled this object with application error code 1.
+    ObjectAborted,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -96,13 +98,39 @@ impl Drop for PendingSend {
     }
 }
 
+/// A queued object whose transport acknowledgement is still pending.
+/// Dropping it cancels only this object stream; this is never a decode receipt.
+pub struct ObjectSend {
+    pending: PendingSend,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+    deadline: tokio::time::Instant,
+}
+impl ObjectSend {
+    /// Await transport acknowledgement within the original budget and release the slot.
+    pub async fn finish(mut self) -> Result<(), Error> {
+        tokio::time::timeout_at(self.deadline, async {
+            if let Some(code) = self.pending.stream.stopped().await.map_err(transport)? {
+                return Err(if code == 1u32.into() {
+                    Error::ObjectAborted
+                } else {
+                    Error::Protocol("object rejected by peer")
+                });
+            }
+            self.pending.complete = true;
+            Ok(())
+        })
+        .await
+        .map_err(|_| Error::Timeout)?
+    }
+}
+
 /// Hold one negotiated resource and its control stream for the connection lifetime.
 /// 每连接协商一个资源，保留控制流；释放时关闭连接，调用方必须独占连接所有权。
 pub struct Session {
     guard: ConnectionGuard,
     agreement: Agreement,
     publisher: bool,
-    send_slots: tokio::sync::Semaphore,
+    send_slots: std::sync::Arc<tokio::sync::Semaphore>,
     _control: (quinn::SendStream, quinn::RecvStream),
 }
 impl Session {
@@ -125,11 +153,17 @@ impl Session {
     /// Send a single object on its own unidirectional stream within a time budget.
     /// 在独立单向流发送一个对象；超时中止该流，调用方决定后续依赖恢复。
     pub async fn send(&self, object: &Object, budget: Duration) -> Result<(), Error> {
+        self.start_send(object, budget).await?.finish().await
+    }
+
+    /// Queue bytes in stream order and retain a bounded slot until ACK or cancellation.
+    /// The budget includes both queuing and acknowledgement; callers must finish or drop.
+    pub async fn start_send(&self, object: &Object, budget: Duration) -> Result<ObjectSend, Error> {
         if !self.publisher {
             return Err(Error::Protocol("subscriber cannot publish"));
         }
         let deadline = tokio::time::Instant::now() + budget;
-        let _slot = tokio::time::timeout_at(deadline, self.send_slots.acquire())
+        let slot = tokio::time::timeout_at(deadline, self.send_slots.clone().acquire_owned())
             .await
             .map_err(|_| Error::Timeout)?
             .map_err(transport)?;
@@ -143,16 +177,50 @@ impl Session {
             complete: false,
         };
         tokio::time::timeout_at(deadline, async {
-            AsyncWriteExt::write_all(&mut pending.stream, &bytes).await?;
+            AsyncWriteExt::write_all(&mut pending.stream, &bytes).await.map_err(|error| {
+                if matches!(error.get_ref().and_then(|e| e.downcast_ref::<quinn::WriteError>()), Some(quinn::WriteError::Stopped(code)) if *code == 1u32.into()) {
+                    Error::ObjectAborted
+                } else { Error::Io(error) }
+            })?;
             pending.stream.finish().map_err(transport)?;
-            if pending.stream.stopped().await.map_err(transport)?.is_some() {
-                return Err(Error::Protocol("object rejected by peer"));
-            }
-            pending.complete = true;
-            Ok(())
+            Ok::<_, Error>(())
         })
         .await
-        .map_err(|_| Error::Timeout)?
+        .map_err(|_| Error::Timeout)??;
+        Ok(ObjectSend {
+            pending,
+            _slot: slot,
+            deadline,
+        })
+    }
+
+    /// Live receive: bound an accepted object's residence separately from idle waiting.
+    /// None denotes a local expiry or an explicit RESET(1), never malformed framing.
+    pub async fn recv_live(
+        &mut self,
+        idle: Duration,
+        residence: Duration,
+    ) -> Result<Option<Object>, Error> {
+        if self.publisher {
+            return Err(Error::Protocol("publisher cannot subscribe"));
+        }
+        if residence.is_zero() || residence > Duration::from_secs(1) {
+            return Err(Error::Protocol("object residence"));
+        }
+        let mut stream = tokio::time::timeout(idle, self.guard.0.accept_uni())
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(transport)?;
+        match tokio::time::timeout(residence, wire::read_object(&mut stream)).await {
+            Err(_) => {
+                let _ = stream.stop(1u32.into());
+                Ok(None)
+            }
+            Ok(Err(Error::Io(error))) if matches!(error.get_ref().and_then(|e| e.downcast_ref::<quinn::ReadError>()), Some(quinn::ReadError::Reset(code)) if *code == 1u32.into()) => {
+                Ok(None)
+            }
+            Ok(result) => result.map(Some),
+        }
     }
 
     /// Receive one complete object with bounded allocation and a caller time budget.
@@ -268,7 +336,7 @@ async fn initiate(
             guard,
             agreement,
             publisher: publishing,
-            send_slots: tokio::sync::Semaphore::new(8),
+            send_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
             _control: (send, recv),
         })
     })
@@ -354,7 +422,7 @@ async fn respond(
             guard,
             agreement,
             publisher: !requested_publish,
-            send_slots: tokio::sync::Semaphore::new(8),
+            send_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
             _control: (send, recv),
         })
     })
