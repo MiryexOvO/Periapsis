@@ -175,6 +175,21 @@ async fn push_publish_relay_fans_out_and_late_join_waits_for_key() -> Result<(),
     source.send(&resumed, BUDGET).await?;
     assert_eq!(first_viewer.recv(BUDGET).await?, resumed);
     assert_eq!(second_viewer.recv(BUDGET).await?, resumed);
+    assert!(second_viewer.request_keyframe(99).await.is_err());
+    second_viewer.request_keyframe(1).await?;
+    let mut requested = false;
+    for sequence in 7..=20 {
+        let unit = frame(sequence, FrameKind::Key, vec![]);
+        source.send(&unit, BUDGET).await?;
+        assert_eq!(first_viewer.recv(BUDGET).await?, unit);
+        assert_eq!(second_viewer.recv(BUDGET).await?, unit);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if source.poll_keyframe_request()? == Some(1) {
+            requested = true;
+            break;
+        }
+    }
+    assert!(requested, "viewer request must reach source through relay");
     drop(source);
     assert!(tokio::time::timeout(BUDGET, ingest_task).await??.is_err());
     assert!(tokio::time::timeout(BUDGET, first_task).await??.is_err());
@@ -657,5 +672,30 @@ async fn queued_object_receipts_bound_concurrency_and_release_slots() -> Result<
     for receipt in receipts {
         receipt.finish().await?;
     }
+    Ok(())
+}
+#[tokio::test]
+async fn keyframe_feedback_is_role_checked_and_coalesced() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (publisher, subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET),
+    )?;
+    assert!(publisher.request_keyframe(1).await.is_err());
+    assert!(subscriber.request_keyframe(0).await.is_err());
+    for _ in 0..20 {
+        subscriber.request_keyframe(1).await?;
+    }
+    let received = tokio::time::timeout(BUDGET, async {
+        loop {
+            if let Some(track) = publisher.poll_keyframe_request() {
+                break track;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(received, 1);
+    assert_eq!(publisher.poll_keyframe_request(), None);
     Ok(())
 }

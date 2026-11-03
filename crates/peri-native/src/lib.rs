@@ -3,6 +3,7 @@
 
 pub mod auth;
 pub mod av1;
+mod feedback;
 pub mod media;
 pub mod relay;
 mod wire;
@@ -66,6 +67,8 @@ enum Control {
     Accept { hello: Hello, agreement: Agreement },
     #[serde(rename = "peri.ack")]
     Ack,
+    #[serde(rename = "peri.keyframe")]
+    Keyframe { track: u16 },
 }
 
 /// One encoded media unit; timestamps share the publisher's media timeline.
@@ -131,9 +134,19 @@ pub struct Session {
     agreement: Agreement,
     publisher: bool,
     send_slots: std::sync::Arc<tokio::sync::Semaphore>,
-    _control: (quinn::SendStream, quinn::RecvStream),
+    feedback: feedback::Feedback,
 }
 impl Session {
+    pub async fn request_keyframe(&self, track: u16) -> Result<(), Error> {
+        if self.publisher {
+            return Err(Error::Protocol("publisher cannot request keyframe"));
+        }
+        self.feedback.request(track).await
+    }
+    pub fn poll_keyframe_request(&self) -> Option<u16> {
+        self.feedback.poll()
+    }
+
     /// Indicate whether this endpoint may send media on the session.
     /// 表明本端是否具有该会话的媒体发送角色。
     pub fn can_send(&self) -> bool {
@@ -332,12 +345,13 @@ async fn initiate(
             return Err(Error::Protocol("agreement mismatch"));
         }
         wire::write_control(&mut send, &Control::Ack).await?;
+        let feedback = feedback::Feedback::new(send, recv, guard.0.clone(), publishing);
         Ok(Session {
             guard,
             agreement,
             publisher: publishing,
             send_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
-            _control: (send, recv),
+            feedback,
         })
     })
     .await
@@ -418,12 +432,13 @@ async fn respond(
         if !matches!(wire::read_control(&mut recv).await?, Control::Ack) {
             return Err(Error::Protocol("expected ACK"));
         }
+        let feedback = feedback::Feedback::new(send, recv, guard.0.clone(), !requested_publish);
         Ok(Session {
             guard,
             agreement,
             publisher: !requested_publish,
             send_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
-            _control: (send, recv),
+            feedback,
         })
     })
     .await

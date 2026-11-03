@@ -241,6 +241,15 @@ impl Publisher {
             .send(&frame.object(&self.catalog)?, budget)
             .await
     }
+    pub fn poll_keyframe_request(&self) -> Result<Option<u16>, Error> {
+        let track = self.session.poll_keyframe_request();
+        if let Some(id) = track
+            && self.catalog.track(id)?.kind != TrackKind::Video
+        {
+            return Err(Error::Protocol("keyframe requested for audio"));
+        }
+        Ok(track)
+    }
     pub(crate) async fn start_send(
         &self,
         frame: &Frame,
@@ -284,6 +293,12 @@ impl Subscriber {
     /// 返回已校验的不可变轨道目录。
     pub fn catalog(&self) -> &Catalog {
         &self.catalog
+    }
+    pub async fn request_keyframe(&self, track: u16) -> Result<(), Error> {
+        if self.catalog.track(track)?.kind != TrackKind::Video {
+            return Err(Error::Protocol("keyframe requested for audio"));
+        }
+        self.session.request_keyframe(track).await
     }
     /// Receive a validated frame; decoding and deadline scheduling are separate.
     /// 接收已校验的媒体单元，解码及截止时间调度由调用方驱动。

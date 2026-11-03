@@ -56,6 +56,7 @@ pub struct Relay {
     catalog: Catalog,
     limits: Limits,
     state: Mutex<State>,
+    requests: Mutex<Vec<u16>>,
 }
 struct Registration<'a> {
     relay: &'a Relay,
@@ -102,6 +103,7 @@ impl Relay {
         Ok(Self {
             catalog,
             limits,
+            requests: Mutex::new(Vec::new()),
             state: Mutex::new(State {
                 viewers: HashMap::new(),
                 next_id: 0,
@@ -128,6 +130,10 @@ impl Relay {
         }
         let _guard = IngestGuard(self);
         loop {
+            let requests = std::mem::take(&mut *self.requests.lock().expect("requests"));
+            for track in requests {
+                source.request_keyframe(track).await?;
+            }
             self.push(source.recv(idle_budget).await?, Instant::now())?;
         }
     }
@@ -204,6 +210,12 @@ impl Relay {
             let mut sends = tokio::task::JoinSet::new();
             let mut recovery_points = HashMap::<u16, u64>::new();
             loop {
+                if let Some(track) = publisher.poll_keyframe_request()? {
+                    let mut requests = self.requests.lock().expect("requests");
+                    if !requests.contains(&track) && requests.len() < 8 {
+                        requests.push(track);
+                    }
+                }
                 let item = tokio::select! {
                     biased;
                     completed = sends.join_next(), if !sends.is_empty() => {
@@ -214,6 +226,7 @@ impl Relay {
                                 // A late failure from an older GOP must not invalidate a newer keyframe.
                                 if recovery_points.get(&track).is_none_or(|key| *key <= sequence) {
                                     forwarded.retain(|(_, id)| *id != track);
+                                    self.request_recovery(track);
                                 }
                             },
                             Err(error) => return Err(error),
@@ -233,6 +246,7 @@ impl Relay {
                 if deadline <= now || !ready || sends.len() >= 4 {
                     if frame.kind != FrameKind::Disposable {
                         forwarded.retain(|(_, track)| *track != frame.track);
+                        self.request_recovery(frame.track);
                     }
                     continue;
                 }
@@ -247,6 +261,7 @@ impl Relay {
                     }
                     Err(Error::Timeout | Error::ObjectAborted) => {
                         forwarded.retain(|(_, id)| *id != frame.track);
+                        self.request_recovery(frame.track);
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -262,6 +277,20 @@ impl Relay {
         tokio::select! {
             result = operation => result,
             _ = &mut cancelled => Err(Error::Protocol("relay subscriber cancelled")),
+        }
+    }
+
+    fn request_recovery(&self, track: u16) {
+        if self
+            .catalog
+            .tracks
+            .iter()
+            .any(|entry| entry.id == track && entry.kind == crate::media::TrackKind::Video)
+        {
+            let mut requests = self.requests.lock().expect("requests");
+            if !requests.contains(&track) && requests.len() < 8 {
+                requests.push(track);
+            }
         }
     }
 

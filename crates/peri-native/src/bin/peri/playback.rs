@@ -287,10 +287,12 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 Some(frame) => frame,
                 None => {
                     stats.dropped += 1;
+                    subscriber.request_keyframe(track.id).await?;
                     if !waiting_key {
                         buffer.recover(track.id);
                         waiting_key = true;
                         stats.recoveries += 1;
+                        subscriber.request_keyframe(track.id).await?;
                         decoder.stop().await;
                         decoder = Decoder::new(&track).await?;
                     }
@@ -301,6 +303,9 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 continue;
             }
             if waiting_key && frame.kind != FrameKind::Key {
+                if stats.recoveries > 0 {
+                    subscriber.request_keyframe(track.id).await?;
+                }
                 stats.dropped += 1;
                 continue;
             }
@@ -313,6 +318,20 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
             }
             if frame.sequence <= previous {
                 return Err("playback requires ordered media".into());
+            }
+            if previous != 0
+                && frame.dependencies.iter().any(|id| *id > previous)
+                && frame.kind == FrameKind::Reference
+            {
+                previous = frame.sequence;
+                buffer.recover(track.id);
+                waiting_key = true;
+                stats.recoveries += 1;
+                stats.dropped += 1;
+                subscriber.request_keyframe(track.id).await?;
+                decoder.stop().await;
+                decoder = Decoder::new(&track).await?;
+                continue;
             }
             previous = frame.sequence;
             let (pts, origin) = anchor.ok_or("playback clock")?;
@@ -353,6 +372,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             buffer.recover(track.id);
                             waiting_key = true;
                             stats.recoveries += 1;
+                            subscriber.request_keyframe(track.id).await?;
                             decoder.stop().await;
                             decoder = Decoder::new(&track).await?;
                             break;
@@ -360,6 +380,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                         if buffer.decoded(frame.sequence, Instant::now()).is_err() {
                             waiting_key = true;
                             stats.recoveries += 1;
+                            subscriber.request_keyframe(track.id).await?;
                             decoder.stop().await;
                             decoder = Decoder::new(&track).await?;
                             break;
@@ -404,6 +425,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                     }
                     Event::Recover { .. } => {
                         stats.recoveries += 1;
+                        subscriber.request_keyframe(track.id).await?;
                         waiting_key = true;
                         decoder.stop().await;
                         decoder = Decoder::new(&track).await?;
