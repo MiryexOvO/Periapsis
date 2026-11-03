@@ -19,7 +19,8 @@
 使用本地播放截止时间决定解码、丢弃和恢复，依赖需要实际解码确认。
 详见 [media-01 实验媒体配置](docs/PERI-MEDIA-01.md)。
 原生发布接入和单资源 Relay 库已实现，提供 AV1 编码源经 Relay 到双接收端的保真示例。
-实时解码播放、播放时间轴映射、接收反馈、发布鉴权和推流软件 SDK/插件尚待实现。
+另提供分进程 Relay、AV1 文件发布与录制命令，使用证书校验及独立发布/订阅凭据。
+实时解码播放、播放时间轴映射、接收反馈和推流软件 SDK/插件尚待实现。
 MPQUIC 定位为可选原生端多路径增强模块，当前尚未实现，单路径不依赖它运行。
 
 主线是原生 QUIC 发布、Relay 分发和浏览器 WebTransport 接收。
@@ -37,8 +38,21 @@ cargo test -p peri-native
 ```
 
 测试建立本机真实 QUIC/TLS 连接，校验资源和能力协商、有界对象传递、并发发送、
-错误协商拒绝、超时处理，以及媒体目录和依赖调度。该模块提供 Rust API，暂未提供独立推流命令或软件插件。
+错误协商拒绝、超时处理，以及媒体目录和依赖调度。该模块提供 Rust API 和实验文件发布命令，暂未提供推流软件插件。
 它与下方使用早期传输依赖的网页演示属于不同链路。
+
+### 原生分进程 Relay、发布与接收
+
+```powershell
+cargo build -p peri-native --bin peri
+.\target\debug\peri.exe --help
+```
+
+程序提供init、relay、publish、receive命令；Linux/macOS使用`./target/debug/peri`。
+服务读取独立发布/订阅凭据，客户端校验证书和服务器名称；文件发布暂限AV1全关键帧。
+证书、凭据和三终端使用步骤见[原生服务说明](docs/PERI-SERVICE-01.md)。
+可用`pnpm run native:check`或`npm run native:check`验证分进程保真、鉴权拒绝和重新发布。
+需要Node.js、Rust及AV1 FFmpeg；原生服务尚无实时观看UI，下方网页演示仍使用早期链路。
 
 ### 原生发布与 AV1 Relay 验证
 
@@ -51,7 +65,7 @@ cargo run -p peri-native --example relay_video
 示例生成 320×180、15 fps 的 AV1 全关键帧片段，经原生 PERI 发布接入和 Relay
 分发给两个接收端，检查编码数据及解码后的逐帧校验值一致。
 输出位于 `dist/native-relay/`，可通过 `PERI_FFMPEG` 指定 FFmpeg 路径。
-这是单进程编排、本机真实 QUIC/TLS 的链路示例，尚无独立服务器命令和实时观看 UI。
+这是单进程编排、本机真实 QUIC/TLS 的链路示例，该示例不使用分进程服务，也不提供实时观看 UI。
 全关键帧片段用于内容保真验证，不代表生产编码配置或低延迟性能基准。
 详见 [原生发布与 Relay 实验](docs/PERI-RELAY-01.md)。
 

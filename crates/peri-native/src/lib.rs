@@ -1,6 +1,8 @@
 //! Experimental PERI native subscriber/publisher over QUIC.
 //! 实验原生 PERI 发布订阅：独立 ALPN、控制封装和对象流，不提供公网鉴权。
 
+pub mod auth;
+pub mod av1;
 pub mod media;
 pub mod relay;
 mod wire;
@@ -45,9 +47,19 @@ fn transport(error: impl fmt::Display) -> Error {
 #[serde(tag = "type", deny_unknown_fields)]
 enum Control {
     #[serde(rename = "peri.subscribe")]
-    Subscribe { resource: String, hello: Hello },
+    Subscribe {
+        resource: String,
+        hello: Hello,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authorization: Option<String>,
+    },
     #[serde(rename = "peri.publish")]
-    Publish { resource: String, hello: Hello },
+    Publish {
+        resource: String,
+        hello: Hello,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authorization: Option<String>,
+    },
     #[serde(rename = "peri.accept")]
     Accept { hello: Hello, agreement: Agreement },
     #[serde(rename = "peri.ack")]
@@ -94,6 +106,12 @@ pub struct Session {
     _control: (quinn::SendStream, quinn::RecvStream),
 }
 impl Session {
+    /// Indicate whether this endpoint may send media on the session.
+    /// 表明本端是否具有该会话的媒体发送角色。
+    pub fn can_send(&self) -> bool {
+        self.publisher
+    }
+
     /// Return the agreement only while the transport remains connected.
     /// 仅在传输尚未观察到关闭时返回协商结果。
     pub fn agreement(&self) -> Option<&Agreement> {
@@ -190,7 +208,7 @@ pub async fn subscribe(
     resource: &str,
     budget: Duration,
 ) -> Result<Session, Error> {
-    initiate(connection, hello, resource, budget, false).await
+    initiate(connection, hello, resource, budget, false, None).await
 }
 
 /// Push one resource to an explicitly authorized ingest endpoint.
@@ -201,7 +219,7 @@ pub async fn publish(
     resource: &str,
     budget: Duration,
 ) -> Result<Session, Error> {
-    initiate(connection, hello, resource, budget, true).await
+    initiate(connection, hello, resource, budget, true, None).await
 }
 
 async fn initiate(
@@ -210,6 +228,7 @@ async fn initiate(
     resource: &str,
     budget: Duration,
     publishing: bool,
+    authorization: Option<&str>,
 ) -> Result<Session, Error> {
     let guard = ConnectionGuard(connection);
     validate_local(&hello, resource, &guard.0)?;
@@ -222,11 +241,13 @@ async fn initiate(
                 Control::Publish {
                     resource: resource.into(),
                     hello: hello.clone(),
+                    authorization: authorization.map(str::to_owned),
                 }
             } else {
                 Control::Subscribe {
                     resource: resource.into(),
                     hello: hello.clone(),
+                    authorization: authorization.map(str::to_owned),
                 }
             },
         )
@@ -263,7 +284,7 @@ pub async fn accept(
     resource: &str,
     budget: Duration,
 ) -> Result<Session, Error> {
-    respond(connection, hello, resource, budget, false).await
+    respond(connection, hello, resource, budget, Some(false), None).await
 }
 
 /// Accept a push publisher on an exclusively owned authorized QUIC connection.
@@ -274,7 +295,7 @@ pub async fn accept_publish(
     resource: &str,
     budget: Duration,
 ) -> Result<Session, Error> {
-    respond(connection, hello, resource, budget, true).await
+    respond(connection, hello, resource, budget, Some(true), None).await
 }
 
 async fn respond(
@@ -282,7 +303,8 @@ async fn respond(
     hello: Hello,
     resource: &str,
     budget: Duration,
-    publishing: bool,
+    publishing: Option<bool>,
+    credentials: Option<&auth::Credentials>,
 ) -> Result<Session, Error> {
     let guard = ConnectionGuard(connection);
     validate_local(&hello, resource, &guard.0)?;
@@ -294,11 +316,25 @@ async fn respond(
             return Err(Error::Protocol("invalid preface or wire version"));
         }
         let message: Control = wire::read_control(&mut recv).await?;
-        let (requested, remote) = match (publishing, message) {
-            (true, Control::Publish { resource, hello })
-            | (false, Control::Subscribe { resource, hello }) => (resource, hello),
+        let (requested, remote, authorization, requested_publish) = match message {
+            Control::Publish {
+                resource,
+                hello,
+                authorization,
+            } => (resource, hello, authorization, true),
+            Control::Subscribe {
+                resource,
+                hello,
+                authorization,
+            } => (resource, hello, authorization, false),
             _ => return Err(Error::Protocol("unexpected connection role")),
         };
+        if publishing.is_some_and(|expected| expected != requested_publish) {
+            return Err(Error::Protocol("unexpected connection role"));
+        }
+        if let Some(credentials) = credentials {
+            credentials.authorize(requested_publish, authorization.as_deref())?;
+        }
         if requested != resource {
             return Err(Error::Protocol("resource denied"));
         }
@@ -317,11 +353,65 @@ async fn respond(
         Ok(Session {
             guard,
             agreement,
-            publisher: !publishing,
+            publisher: !requested_publish,
             send_slots: tokio::sync::Semaphore::new(8),
             _control: (send, recv),
         })
     })
     .await
     .map_err(|_| Error::Timeout)?
+}
+
+/// Publish with an explicit bearer credential on the protected endpoint.
+/// 使用显式持有者凭据向受保护接入端发布。
+pub async fn publish_authenticated(
+    connection: quinn::Connection,
+    hello: Hello,
+    resource: &str,
+    authorization: &str,
+    budget: Duration,
+) -> Result<Session, Error> {
+    auth::validate_token(authorization)?;
+    initiate(
+        connection,
+        hello,
+        resource,
+        budget,
+        true,
+        Some(authorization),
+    )
+    .await
+}
+
+/// Subscribe using a role-scoped bearer credential.
+/// 使用限定订阅角色的持有者凭据接收媒体。
+pub async fn subscribe_authenticated(
+    connection: quinn::Connection,
+    hello: Hello,
+    resource: &str,
+    authorization: &str,
+    budget: Duration,
+) -> Result<Session, Error> {
+    auth::validate_token(authorization)?;
+    initiate(
+        connection,
+        hello,
+        resource,
+        budget,
+        false,
+        Some(authorization),
+    )
+    .await
+}
+
+/// Authorize the requested role and resource before activating the session.
+/// 在激活会话前授权请求角色与资源；失败不回退到无鉴权接口。
+pub async fn accept_authenticated(
+    connection: quinn::Connection,
+    hello: Hello,
+    resource: &str,
+    credentials: &auth::Credentials,
+    budget: Duration,
+) -> Result<Session, Error> {
+    respond(connection, hello, resource, budget, None, Some(credentials)).await
 }
