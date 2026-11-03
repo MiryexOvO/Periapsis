@@ -19,12 +19,15 @@ start.onclick = async () => {
   let peer: Awaited<ReturnType<typeof connect>> | undefined;
   let decoder: VideoDecoder | undefined;
   const handles: (() => void)[] = [];
-  cleanup = () => { alive = false; for (const close of handles.reverse()) close(); if (decoder?.state !== "closed") decoder?.close(); peer?.close(); start.disabled = false; stop.disabled = true; recover.disabled = true; };
+  const close = () => { if (!alive) return; alive = false; for (const release of [...handles].reverse()) release(); if (decoder?.state !== "closed") decoder?.close(); peer?.close(); start.disabled = false; stop.disabled = true; recover.disabled = true; };
+  cleanup = close;
   stop.disabled = false;
   try {
     if (!globalThis.isSecureContext || typeof VideoDecoder === "undefined") throw new Error("需要 HTTPS 或 localhost，以及支持 WebCodecs 的浏览器");
     const config = await fetch("/config").then(r => r.json()) as { url: string; path: string };
+    if (!alive) return;
     peer = await connect(new URL(config.url), "subscribe");
+    if (!alive) { peer.close(); return; }
     const request = peer.origin.request(Moq.Path.from(config.path)); handles.push(() => request.close());
     const broadcast = await resolveBroadcast(request, 5000);
     const catalogTrack = broadcast.track("catalog").subscribe(); handles.push(() => catalogTrack.close());
@@ -38,7 +41,7 @@ start.onclick = async () => {
     decoder = new VideoDecoder({ output(frame) {
       try { if (alive) { context.drawImage(frame, 0, 0, canvas.width, canvas.height); rendered++; metrics.textContent = `已显示 ${rendered} 帧 · 已解码 ${keys} 个关键帧`; metrics.dataset.frames = String(rendered); metrics.dataset.keys = String(keys); } }
       finally { frame.close(); }
-    }, error(error) { status.textContent = error.message; cleanup?.(); } });
+    }, error(error) { if (alive) { status.textContent = error.message; close(); } } });
     decoder.configure(codec);
     recover.disabled = false;
     recover.onclick = () => { decoder!.reset(); decoder!.configure(codec); needKey = true; status.textContent = "等待下一个关键帧"; };
@@ -61,7 +64,7 @@ start.onclick = async () => {
         }
       } } finally { group.close(); }
     }
-  } catch (error) { if (alive) status.textContent = error instanceof Error ? error.message : String(error); cleanup?.(); }
+  } catch (error) { if (alive) status.textContent = error instanceof Error ? error.message : String(error); close(); }
 };
 stop.onclick = () => { cleanup?.(); status.textContent = "已停止"; };
 window.addEventListener("pagehide", () => cleanup?.());
