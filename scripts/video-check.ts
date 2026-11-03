@@ -13,6 +13,26 @@ try {
   const wire = await first.locator("#metrics").getAttribute("data-transport");
   if (wire !== (quic ? "webtransport" : "websocket")) throw new Error(`Unexpected transport: ${wire}`);
   console.log(`Verified browser transport: ${wire}`);
+  if (quic) {
+    const rejected = await first.evaluate(async () => {
+      const config = await fetch("/config").then(r => r.json());
+      const attempt = async (badHash: boolean) => {
+        const url = new URL(config.url);
+        if (!badHash) url.searchParams.set("token", "invalid");
+        const hash: string = badHash ? "00".repeat(32) : config.certificateHash;
+        const options: WebTransportOptions & { protocols: string[] } = { protocols: ["moqt-22"], serverCertificateHashes: [{ algorithm: "sha-256", value: Uint8Array.from(hash.match(/../g)!, hex => parseInt(hex, 16)).buffer }] };
+        const connection = new WebTransport(url, options);
+        connection.closed.catch(() => {});
+        const timer = setTimeout(() => connection.close(), 3000);
+        try { await connection.ready; return false; }
+        catch { return true; }
+        finally { clearTimeout(timer); connection.close(); }
+      };
+      return { invalidCertificate: await attempt(true), invalidToken: await attempt(false) };
+    });
+    if (!rejected.invalidCertificate || !rejected.invalidToken) throw new Error("WebTransport access validation failed");
+    console.log("Verified certificate and token rejection");
+  }
   const visible = await first.locator("canvas").evaluate((canvas: HTMLCanvasElement) => {
     const rgba = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data;
     return rgba.some((value, i) => i % 4 !== 3 && value > 30);
