@@ -1,11 +1,23 @@
 # Periapsis / PERI
 
-基于标准 MoQ 的现代流媒体会话与媒体策略研发工程。面向直播、实时互动、桌面和游戏串流，
-支持浏览器与原生端的长期目标；P2P可选
+**基于 QUIC 的低延迟实时媒体传输协议。**
 
-目前提供 MOQT-22 对象发布/订阅、本地 Relay 和 offer/accept/ack 双向会话协商，
-以及 Rust 原生 QUIC 直连适配。本地浏览器演示支持 VP8 + Opus 测试音视频播放。
-浏览器支持 WebTransport，以及 QMux/WebSocket 兼容模式。
+面向直播、实时互动、桌面和游戏串流，目标是在延迟预算内兼顾画质、播放连续性和弱网恢复。
+面向浏览器与原生客户端，支持服务器分发的研发方向，P2P 为可选研究方向。
+采集、场景编辑和编码由外部推流软件负责；软件通过原生输出插件或 SDK 接入。
+
+## 项目状态
+
+项目处于协议研发阶段。独立线协议、媒体依赖与截止时间语义、接收端反馈、
+发布鉴权以及原生推流 SDK 尚待设计和实现，当前没有稳定协议或性能领先承诺。
+
+现有原型提供会话能力协商、有界调度队列、原生 QUIC 对象收发，以及本机浏览器的
+WebTransport 音视频播放和断线恢复。底层仍使用早期第三方对象传输与媒体封装依赖，
+**本次定位调整不代表现有代码已实现独立 PERI 线协议**。
+
+主线是原生 QUIC 发布、Relay 分发和浏览器 WebTransport 接收。
+已有 WebSocket 和 RTMP 入口保留为早期实验工具，不作为正式协议的必需组成部分。
+原生输出插件与 SDK 尚未完成，不能让任意推流软件仅填写地址便直接接入。
 
 ## 快速运行
 
@@ -24,9 +36,12 @@ VP8 测试图和 48 kHz 单声道 Opus 测试音，使用 LOC 和 MSF catalog �
 点击“连接”后开始播放 880 Hz 测试音，可使用“静音”关闭声音。
 视频按音频播放时钟显示；“恢复画面”会等待下一个关键帧恢复解码。
 播放器限制音频排队和视频帧队列，过期视频帧会被丢弃。
+连接中断或媒体连续 3 秒没有数据时，播放器会重新连接、读取媒体描述并等待关键帧恢复。
+重试使用 0.5 秒起步、最多 5 秒的退避间隔，连续失败最多重试 8 次。
+点击“停止”会取消播放和重连；重新连接后静音设置保持不变。
 
 可通过 `PERI_VIDEO_PORT` 指定端口，通过 `PERI_FFMPEG` 指定 FFmpeg 可执行文件路径。
-服务仅绑定本机，使用 localhost 安全上下文和 MoQ/WebSocket 兼容传输。
+服务仅绑定本机，使用 localhost 安全上下文和 WebSocket 兼容传输。
 普通局域网 HTTP 地址和实时采集尚未包含。
 
 本地 WebTransport/QUIC 视频模式还需要 Rust 工具链：
@@ -41,6 +56,41 @@ QUIC 接收；使用短期证书和指纹校验，不需要手动安装证书。
 
 安装 Chrome 后可运行 `pnpm run video:check` 检查音视频播放、中途加入、静音和关键帧恢复。
 `pnpm run video:quic:check` 会检查 WebTransport 模式及错误证书、错误令牌的拒绝行为。
+
+### 早期 RTMP 接入实验（非协议主线）
+
+接收支持 **RTMP + H.264 + AAC-LC** 的推流软件（例如 OBS、FFmpeg），浏览器通过
+WebTransport 接收。接入网关仅改变封装，不重新编码视频和音频；保留输入分辨率。
+需要带 RTMP/FLV 支持的 FFmpeg、Rust 和支持 H.264/AAC WebCodecs 的 Chrome/Edge。
+
+```powershell
+pnpm run ingest
+# 或 npm run ingest
+```
+
+启动后等待推流软件连接。填写：
+
+| 参数 | 值 |
+| --- | --- |
+| 服务器地址 | `rtmp://127.0.0.1:1935/live` |
+| 推流密钥 | `stream` |
+| 完整推流 URL | `rtmp://127.0.0.1:1935/live/stream` |
+| 视频 | H.264，关闭 B 帧，关键帧间隔 1 秒 |
+| 音频 | AAC-LC，单声道或立体声 |
+
+收到音视频和第一个关键帧后，终端会输出观看地址。打开
+[本地播放器](http://127.0.0.1:8080)，点击“连接”；支持中途加入及关键帧恢复。
+如使用 OBS，可在“设置 → 直播”选择自定义服务，填写服务器地址和推流密钥，
+在编码器设置中将 B 帧设为 0。其他推流工具使用相同地址与编码配置。
+
+`PERI_RTMP_PORT` 可修改接入端口；`PERI_VIDEO_PORT` 可修改网页端口；
+`PERI_FFMPEG` 可指定 FFmpeg 路径。`pnpm run ingest -- --ws` 或
+`npm run ingest -- --ws` 选择 WebSocket 兼容传输。
+`pnpm run ingest:check` 可使用 FFmpeg 推流验证样本保真、浏览器音视频播放和中途加入。
+
+当前是单发布端、本机开发入口，RTMP 推流密钥不提供鉴权，推流结束或编码配置改变后需重启服务。
+尚不支持公网部署、远程普通 HTTP 视频播放、SRT/RTSP 接入或 P2P 转发。
+兼容范围按接入协议和编码组合确定，并非所有软件的全部输出格式均可直接使用。
 
 ### 对象传输与会话协商
 
@@ -67,23 +117,22 @@ npm run demo
 npm run handshake
 ```
 
-Demo 自动启动随机端口 Relay、建立发布/订阅连接，通过 MOQT 发送 PERI hello，
+Demo 自动启动随机端口 Relay、建立发布/订阅连接，通过实验对象传输发送 PERI hello，
 在接收端执行能力选择，再发送 64 KiB 随机对象并核对 SHA-256。完成后自动关闭。
-成功输出包含 `moq-transport-22`、`websocket`、`sentBytes: 65536`、`receivedBytes: 65536`。
+成功输出包含 `websocket`、`sentBytes: 65536`、`receivedBytes: 65536`。
 `demo` 保留单向 hello 与对象完整性诊断；hello 的结果在接收端本地计算。
 
-`handshake` 演示通过两个 MOQT 控制轨道交换 offer、accept、ack。响应端选择配置，发起端
+`handshake` 演示通过两个实验控制轨道交换 offer、accept、ack。响应端选择配置，发起端
 重新验证配置并发送 ACK，响应端收到 ACK 后进入 ACTIVE。成功输出两端均为 `ACTIVE`。
 失败的协商不会返回活动会话；连接关闭后，其协商结果也会失效。
 
 ## 分进程发布和订阅对象
 
-所有终端配置相同的环境变量。以下值仅为本地演示，应替换成随机值：
+Relay 地址使用程序默认的本机端点；所有终端配置相同的凭据环境变量。以下值仅为本地演示，应替换成随机值：
 
 ```powershell
 $env:PERI_PUBLISH_TOKEN = 'local-publisher-example-123456'
 $env:PERI_SUBSCRIBE_TOKEN = 'local-subscriber-example-654321'
-$env:PERI_RELAY_URL = 'ws://127.0.0.1:4443/moq'
 ```
 
 使用 pnpm 时，终端 A 运行 `pnpm run dev`，终端 B 运行：
@@ -119,11 +168,11 @@ npm run object -- subscribe received.bin peri/probe
 | ------------------ | ------------------------------------------------------- |
 | `src/session.ts`   | 有界 hello 解析、版本/配置协商、关键扩展拒绝            |
 | `src/handshake.ts` | 双向协商状态机、会话关联、配置复核与确认顺序            |
-| `src/peer.ts`      | 真实 MOQT 控制轨道上的 offer/accept/ack 交换            |
+| `src/peer.ts`      | 实验控制轨道上的 offer/accept/ack 交换            |
 | `src/scheduler.ts` | 本地单调时间 deadline、依赖就绪检查、有界队列和恢复建议 |
-| `src/transport.ts` | draft-22 严格选择、对象发布/订阅、连接与收取超时        |
+| `src/transport.ts` | 实验版本严格选择、对象发布/订阅、连接与收取超时        |
 | `src/relay.ts`     | 本机 QMux/WebSocket 参考 Relay、角色凭据、广播路由      |
-| `src/browser.ts`   | 浏览器可打包 SDK 入口；WebTransport 路径尚未浏览器实测  |
+| `src/browser.ts`   | 浏览器可打包 SDK 入口；支持 WebTransport 与 WebSocket  |
 | `src/cli.ts`       | 独立发布/订阅探针                                       |
 
 ## Rust 核心
@@ -149,8 +198,8 @@ cargo test -p peri-transport --test native_quic
 cargo test -p peri-transport --test native_peer
 ```
 
-该测试使用本机 UDP、TLS 证书校验和固定的 MOQT-22 ALPN，比较发送与接收的对象内容。
-它不包含 Relay 转发、音视频播放或独立 MoQ 实现之间的互通验证。
+该测试使用本机 UDP、TLS 证书校验和固定的实验 ALPN，比较发送与接收的对象内容。
+它不包含 Relay 转发、音视频播放或独立协议实现之间的互通验证。
 
 控制消息格式互通示例（需要 Cargo）：
 
@@ -163,6 +212,7 @@ pnpm run interop
 
 ## HTTP / HTTPS 设计
 
-HTTPS 浏览器计划使用 MoQ/WebTransport + WebCodecs。普通远程 HTTP 浏览器计划使用
-媒体网关 + MSE。当前 WS 链路验证了 HTTP 兼容环境中的对象传输，**不等于完成 HTTP 视频播放**。
-WSS 可以由 TLS 网关终止，但当前参考服务仅允许本机 CLI，拒绝浏览器 Origin，尚不可公网部署。
+网页部署需区分浏览器能力：HTTPS 浏览器主线使用 WebTransport + WebCodecs；
+普通远程 HTTP 页面无法直接获得同等安全上下文能力，兼容播放方案尚待评估。
+当前本机 HTTP 演示利用 localhost 安全上下文，不代表已实现远程普通 HTTP 视频播放。
+WSS 可以由 TLS 网关终止，但基础 Relay 默认拒绝浏览器 Origin；媒体演示仅允许其本机网页 Origin，尚不可公网部署。

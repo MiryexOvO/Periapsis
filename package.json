@@ -28,6 +28,8 @@
     "video": "node --experimental-strip-types scripts/video.ts",
     "video:check": "node --experimental-strip-types scripts/video-check.ts",
     "video:quic": "node --experimental-strip-types scripts/video.ts --quic",
+    "ingest": "node --experimental-strip-types scripts/ingest.ts",
+    "ingest:check": "node --experimental-strip-types scripts/ingest-check.ts",
     "video:quic:check": "node --experimental-strip-types scripts/video-check.ts --quic"
   },
   "name": "periapsis",
