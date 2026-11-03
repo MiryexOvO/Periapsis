@@ -24,9 +24,10 @@ start.onclick = async () => {
   stop.disabled = false;
   try {
     if (!globalThis.isSecureContext || typeof VideoDecoder === "undefined") throw new Error("需要 HTTPS 或 localhost，以及支持 WebCodecs 的浏览器");
-    const config = await fetch("/config").then(r => r.json()) as { url: string; path: string };
+    const config = await fetch("/config").then(r => r.json()) as { url: string; path: string; certificateHash?: string };
     if (!alive) return;
-    peer = await connect(new URL(config.url), "subscribe");
+    peer = await connect(new URL(config.url), "subscribe", 5000, config.certificateHash);
+    metrics.dataset.transport = peer.connection.transport;
     if (!alive) { peer.close(); return; }
     const request = peer.origin.request(Moq.Path.from(config.path)); handles.push(() => request.close());
     const broadcast = await resolveBroadcast(request, 5000);

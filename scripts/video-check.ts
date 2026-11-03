@@ -1,7 +1,8 @@
 import { chromium } from "playwright-core";
 import { startVideoDemo } from "./media-runtime.ts";
 import { mkdir } from "node:fs/promises";
-const demo = await startVideoDemo(0);
+const quic = process.argv.includes("--quic");
+const demo = await startVideoDemo(0, quic ? "webtransport" : "websocket");
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 try {
   const first = await browser.newPage();
@@ -9,6 +10,9 @@ try {
   await first.waitForFunction(() => Number(document.querySelector<HTMLElement>("#metrics")?.dataset.frames) >= 30, undefined, { timeout: 15000 });
   const late = await browser.newPage(); await late.goto(demo.url); await late.click("#connect");
   await late.waitForFunction(() => Number(document.querySelector<HTMLElement>("#metrics")?.dataset.frames) >= 15, undefined, { timeout: 15000 });
+  const wire = await first.locator("#metrics").getAttribute("data-transport");
+  if (wire !== (quic ? "webtransport" : "websocket")) throw new Error(`Unexpected transport: ${wire}`);
+  console.log(`Verified browser transport: ${wire}`);
   const visible = await first.locator("canvas").evaluate((canvas: HTMLCanvasElement) => {
     const rgba = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data;
     return rgba.some((value, i) => i % 4 !== 3 && value > 30);

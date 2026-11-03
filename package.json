@@ -27,7 +27,9 @@
     "handshake": "node --experimental-strip-types src/handshake-demo.ts",
     "interop": "node --experimental-strip-types scripts/rust-interop.ts",
     "video": "node --experimental-strip-types scripts/video.ts",
-    "video:check": "node --experimental-strip-types scripts/video-check.ts"
+    "video:check": "node --experimental-strip-types scripts/video-check.ts",
+    "video:quic": "node --experimental-strip-types scripts/video.ts --quic",
+    "video:quic:check": "node --experimental-strip-types scripts/video-check.ts --quic"
   },
   "name": "periapsis",
   "engines": {

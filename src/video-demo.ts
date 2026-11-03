@@ -1,6 +1,9 @@
 import { createServer } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+import { spawnSync, spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import { once } from "node:events";
+import { resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -14,13 +17,17 @@ import { startRelay } from "./relay.ts";
 /** Start a loopback-only test-video publisher and browser viewer.
  * 启动仅本机可访问的测试视频发布端与浏览器播放器。
  */
-export async function startVideoDemo(port = 8080) {
+export async function startVideoDemo(port = 8080, transport: "websocket" | "webtransport" = "websocket") {
   const root = fileURLToPath(new URL("../", import.meta.url));
   await mkdir(new URL("../dist/", import.meta.url), { recursive: true });
   const input = fileURLToPath(new URL("../dist/test.ivf", import.meta.url));
   const ffmpeg = spawnSync(process.env.PERI_FFMPEG ?? "ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "3", "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8", "-g", "30", "-auto-alt-ref", "0", "-b:v", "700k", "-f", "ivf", input], { cwd: root, windowsHide: true, encoding: "utf8" });
   if (ffmpeg.error || ffmpeg.status !== 0) throw new Error(`FFmpeg VP8 generation failed: ${ffmpeg.error?.message ?? ffmpeg.stderr}`);
   const video = parseIvf(await readFile(input));
+  if (transport === "webtransport") {
+    const result = spawnSync("cargo", ["build", "--locked", "-p", "peri-transport", "--example", "webtransport_video"], { cwd: root, stdio: "inherit", windowsHide: true });
+    if (result.error || result.status !== 0) throw new Error("Rust WebTransport gateway build failed");
+  }
   await build({ entryPoints: [fileURLToPath(new URL("./video-player.ts", import.meta.url))], bundle: true, platform: "browser", format: "esm", outfile: fileURLToPath(new URL("../dist/player.js", import.meta.url)) });
   const html = await readFile(new URL("../web/video.html", import.meta.url));
   const script = await readFile(new URL("../dist/player.js", import.meta.url));
@@ -48,9 +55,38 @@ export async function startVideoDemo(port = 8080) {
   const track = broadcast.createTrack("video", { maxAge: Moq.Time.Milli(2000) });
   const encoded = new Loc.Producer(track);
   const group = catalog.appendGroup();
-  group.writeFrame({ payload: Msf.encode({ tracks: [{ name: "video", packaging: "loc", role: "video", codec: "vp8", width: video.width, height: video.height, framerate: video.framerate, isLive: true }] }), timestamp: Moq.Time.Timestamp.now() }); group.close();
+  const catalogBytes = Msf.encode({ tracks: [{ name: "video", packaging: "loc", role: "video", codec: "vp8", width: video.width, height: video.height, framerate: video.framerate, isLive: true }] });
+  group.writeFrame({ payload: catalogBytes, timestamp: Moq.Time.Timestamp.now() }); group.close();
   broadcast.announce();
   let index = 0, cycle = 0, stopped = false;
+  let gateway: ReturnType<typeof spawn> | undefined;
+  if (transport === "webtransport") {
+    gateway = spawn(resolve(process.env.CARGO_TARGET_DIR ?? resolve(root, "target"), "debug/examples", process.platform === "win32" ? "webtransport_video.exe" : "webtransport_video"), [], { cwd: root, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+    const child = gateway;
+    const lines = createInterface({ input: child.stdout! });
+    const ready = await new Promise<{ url: string; hash: string }>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(new Error("WebTransport gateway startup timed out")); }, 10000);
+      child.once("error", error => { clearTimeout(timer); reject(error); });
+      child.once("exit", () => { clearTimeout(timer); reject(new Error("WebTransport gateway exited")); });
+      lines.once("line", line => { clearTimeout(timer); try { resolve(JSON.parse(line)); } catch (error) { reject(error); } });
+      child.stdin!.write(JSON.stringify({ origin: url, token: subscribeToken, catalog: Buffer.from(catalogBytes).toString("base64") }) + "\n");
+    });
+    const endpoint = new URL(ready.url); endpoint.searchParams.set("token", subscribeToken);
+    config = { url: endpoint.toString(), path: "peri/test-video", certificateHash: ready.hash };
+    const subscription = track.subscribe();
+    void (async () => {
+      const loc = new Loc.Format("video");
+      while (!stopped) {
+        const group = await subscription.recvGroup(); if (!group) break;
+        try { for (;;) {
+          const frame = await group.readFrame(); if (!frame || stopped) break;
+          const media = loc.decode(frame.payload)[0]!;
+          const message = JSON.stringify({ payload: Buffer.from(frame.payload).toString("base64"), timestamp: media.timestamp, keyframe: (media.payload[0]! & 1) === 0 }) + "\n";
+          if (!child.stdin!.write(message)) await once(child.stdin!, "drain");
+        } } finally { group.close(); }
+      }
+    })().catch(error => { if (!stopped) console.error("WebTransport media input failed:", error.message); }).finally(() => subscription.close());
+  }
   const started = performance.now();
   let timer: ReturnType<typeof setTimeout>;
   const tick = () => {
@@ -62,5 +98,5 @@ export async function startVideoDemo(port = 8080) {
     timer = setTimeout(tick, Math.max(0, started + next / 1000 - performance.now()));
   };
   tick();
-  return { url, async close() { stopped = true; clearTimeout(timer); encoded.close(); catalog.close(); broadcast.close(); publisher.close(); await relay.close(); await new Promise<void>(resolve => server.close(() => resolve())); } };
+  return { url, async close() { stopped = true; clearTimeout(timer); encoded.close(); catalog.close(); broadcast.close(); publisher.close(); gateway?.kill(); await relay.close(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
