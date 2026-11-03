@@ -124,7 +124,7 @@ pub struct Frame {
     pub payload: Vec<u8>,
 }
 impl Frame {
-    fn validate(&self, catalog: &Catalog) -> Result<(), Error> {
+    pub(crate) fn validate(&self, catalog: &Catalog) -> Result<(), Error> {
         let track = catalog.track(self.track)?;
         if self.sequence == 0
             || self.duration_us == 0
