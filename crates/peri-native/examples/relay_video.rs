@@ -4,7 +4,7 @@
 mod support;
 use peri_native::{
     ALPN,
-    media::{Catalog, Frame, FrameKind, Publisher, Subscriber, Track, TrackKind},
+    media::{Catalog, Frame, Publisher, Subscriber},
     relay::{Limits, Relay},
 };
 use peri_types::{Hello, PERI_VERSION, Profile};
@@ -34,84 +34,6 @@ fn ffmpeg(args: &[&str]) -> Result<Vec<u8>, Error> {
         return Err(format!("FFmpeg failed: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
     Ok(output.stdout)
-}
-
-fn parse_generated_ivf(bytes: &[u8]) -> Result<(Catalog, Vec<Frame>), Error> {
-    if bytes.len() < 32
-        || bytes.len() > 16 * 1024 * 1024
-        || &bytes[..4] != b"DKIF"
-        || &bytes[8..12] != b"AV01"
-        || bytes[4..8] != [0, 0, 32, 0]
-    {
-        return Err("invalid generated AV1 IVF".into());
-    }
-    let width = u16::from_le_bytes(bytes[12..14].try_into()?);
-    let height = u16::from_le_bytes(bytes[14..16].try_into()?);
-    let rate = u32::from_le_bytes(bytes[16..20].try_into()?);
-    let scale = u32::from_le_bytes(bytes[20..24].try_into()?);
-    if width == 0
-        || height == 0
-        || rate == 0
-        || scale == 0
-        || scale > rate
-        || u64::from(rate) > u64::from(scale) * 120
-    {
-        return Err("invalid IVF timing".into());
-    }
-    let mut frames: Vec<Frame> = Vec::new();
-    let mut offset = 32;
-    while offset < bytes.len() {
-        if offset + 12 > bytes.len() {
-            return Err("truncated IVF header".into());
-        }
-        let size = u32::from_le_bytes(bytes[offset..offset + 4].try_into()?) as usize;
-        let ticks = u64::from_le_bytes(bytes[offset + 4..offset + 12].try_into()?);
-        offset += 12;
-        if size == 0
-            || size > 1024 * 1024 - 68
-            || offset + size > bytes.len()
-            || frames.len() >= 120
-        {
-            return Err("invalid IVF frame bounds".into());
-        }
-        let timestamp =
-            u64::try_from(u128::from(ticks) * u128::from(scale) * 1_000_000 / u128::from(rate))?;
-        if frames
-            .last()
-            .is_some_and(|previous| previous.timestamp_us >= timestamp)
-        {
-            return Err("invalid IVF order".into());
-        }
-        // 输入由本示例以 -g 1 生成；此处不尝试从任意 AV1 比特流猜测依赖。
-        frames.push(Frame {
-            track: 1,
-            sequence: frames.len() as u64 + 1,
-            timestamp_us: timestamp,
-            duration_us: u32::try_from(u64::from(scale) * 1_000_000 / u64::from(rate))?,
-            kind: FrameKind::Key,
-            dependencies: vec![],
-            payload: bytes[offset..offset + size].to_vec(),
-        });
-        offset += size;
-    }
-    if frames.is_empty() {
-        return Err("empty generated IVF".into());
-    }
-    Ok((
-        Catalog {
-            tracks: vec![Track {
-                id: 1,
-                kind: TrackKind::Video,
-                codec: "video/av1".into(),
-                init: vec![],
-                width: Some(width),
-                height: Some(height),
-                sample_rate: None,
-                channels: None,
-            }],
-        },
-        frames,
-    ))
 }
 
 fn write_received_ivf(path: &Path, catalog: &Catalog, frames: &[Frame]) -> Result<(), Error> {
@@ -195,7 +117,7 @@ async fn main() -> Result<(), Error> {
         "ivf",
         input.to_str().ok_or("invalid input path")?,
     ])?;
-    let (catalog, frames) = parse_generated_ivf(&std::fs::read(input)?)?;
+    let (catalog, frames) = peri_native::av1::read_all_intra_ivf(&std::fs::read(input)?)?;
     let upstream = support::pair(ALPN).await?;
     let (source, ingest) = tokio::try_join!(
         peri_native::publish(upstream.outgoing.clone(), hello(), "live/av1", BUDGET),

@@ -12,9 +12,9 @@ peri-session = { path = "../peri-session" }
 serde.workspace = true
 serde_json.workspace = true
 quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
-tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "io-util", "sync"] }
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "io-util", "sync", "signal"] }
 
-[dev-dependencies]
+subtle = "=2.6.1"
 rcgen = "=0.13.2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 

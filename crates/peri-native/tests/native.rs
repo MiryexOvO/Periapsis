@@ -8,6 +8,86 @@ use support::pair;
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 const BUDGET: Duration = Duration::from_secs(3);
 #[tokio::test]
+async fn protected_endpoint_enforces_bearer_role_and_rejects_anonymous_clients()
+-> Result<(), TestError> {
+    let publish_token = "p".repeat(48);
+    let subscribe_token = "s".repeat(48);
+    let credentials =
+        peri_native::auth::Credentials::new(publish_token.clone(), subscribe_token.clone())?;
+    for scenario in 0..5 {
+        let pair = pair(ALPN).await?;
+        let client = async {
+            match scenario {
+                0 => {
+                    peri_native::publish_authenticated(
+                        pair.outgoing.clone(),
+                        hello(),
+                        "live/auth",
+                        &publish_token,
+                        BUDGET,
+                    )
+                    .await
+                }
+                1 => {
+                    peri_native::subscribe_authenticated(
+                        pair.outgoing.clone(),
+                        hello(),
+                        "live/auth",
+                        &subscribe_token,
+                        BUDGET,
+                    )
+                    .await
+                }
+                2 => {
+                    peri_native::publish_authenticated(
+                        pair.outgoing.clone(),
+                        hello(),
+                        "live/auth",
+                        &subscribe_token,
+                        BUDGET,
+                    )
+                    .await
+                }
+                3 => {
+                    peri_native::subscribe_authenticated(
+                        pair.outgoing.clone(),
+                        hello(),
+                        "live/auth",
+                        &publish_token,
+                        BUDGET,
+                    )
+                    .await
+                }
+                _ => {
+                    peri_native::subscribe(pair.outgoing.clone(), hello(), "live/auth", BUDGET)
+                        .await
+                }
+            }
+        };
+        let (server, client) = tokio::join!(
+            peri_native::accept_authenticated(
+                pair.incoming.clone(),
+                hello(),
+                "live/auth",
+                &credentials,
+                BUDGET
+            ),
+            client
+        );
+        if scenario < 2 {
+            let server = server?;
+            let client = client?;
+            assert_eq!(server.can_send(), scenario == 1);
+            assert_ne!(server.can_send(), client.can_send());
+        } else {
+            assert!(server.is_err());
+            assert!(client.is_err());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn push_publish_relay_fans_out_and_late_join_waits_for_key() -> Result<(), TestError> {
     use peri_native::{
         media::{Catalog, Frame, FrameKind, Publisher, Subscriber, Track, TrackKind},
