@@ -13,6 +13,7 @@ export interface RelayOptions {
   subscribeToken: string;
   peerToken?: string;
   maxConnections?: number;
+  allowedOrigins?: readonly string[];
 }
 function equal(a: string, b: string): boolean {
   const aa = Buffer.from(a), bb = Buffer.from(b);
@@ -66,7 +67,7 @@ export async function startRelay(options: RelayOptions) {
     if (!expected || !equal(url.searchParams.get("token") ?? "", expected)) return reject(401, "Unauthorized");
     if (sockets.clients.size >= max) return reject(503, "Service Unavailable");
     // 浏览器来源需要显式授权策略；本地命令行连接不携带 Origin。
-    if (req.headers.origin) return reject(403, "Origin policy not configured");
+    if (req.headers.origin && !options.allowedOrigins?.includes(req.headers.origin)) return reject(403, "Origin not allowed");
     sockets.handleUpgrade(req, socket, head, ws => {
       accepted++;
       void attach(ws, role as "publish" | "subscribe" | "peer");
