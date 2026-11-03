@@ -1,6 +1,8 @@
 //! Separate-process native PERI relay, file publisher and recorder.
 //! 可分进程运行的原生 PERI Relay、文件发布与录制命令。
 
+#[path = "peri/live.rs"]
+mod live;
 #[path = "peri/playback.rs"]
 mod playback;
 
@@ -253,19 +255,27 @@ async fn publish(args: &[String]) -> Result<(), Error> {
     let publisher = Publisher::new(session, catalog, SETUP).await?;
     println!("PERI_PUBLISH_READY");
     let operation = async {
-        let duration = frames
-            .last()
-            .ok_or("empty source")?
-            .timestamp_us
-            .checked_add(u64::from(frames.last().ok_or("empty source")?.duration_us))
-            .ok_or("source time overflow")?;
         let started = tokio::time::Instant::now();
-        let mut sequence = 0_u64;
+        let mut output_time = 0_u64;
         let mut cycle = 0_u64;
         loop {
-            for frame in &frames {
-                let mut frame = frame.clone();
-                sequence = sequence.checked_add(1).ok_or("sequence exhausted")?;
+            let mut index = 0;
+            while index < frames.len() {
+                if publisher.poll_keyframe_request()?.is_some() {
+                    if let Some(next) = frames[index..]
+                        .iter()
+                        .position(|f| f.kind == peri_native::media::FrameKind::Key)
+                    {
+                        index += next;
+                    } else if looping {
+                        break;
+                    }
+                }
+                let mut frame = frames[index].clone();
+                let sequence = cycle
+                    .checked_mul(frames.len() as u64)
+                    .and_then(|n| n.checked_add(frame.sequence))
+                    .ok_or("sequence exhausted")?;
                 let offset = sequence - frame.sequence;
                 for dependency in &mut frame.dependencies {
                     *dependency = dependency
@@ -273,12 +283,13 @@ async fn publish(args: &[String]) -> Result<(), Error> {
                         .ok_or("dependency exhausted")?;
                 }
                 frame.sequence = sequence;
-                frame.timestamp_us = cycle
-                    .checked_mul(duration)
-                    .and_then(|offset| offset.checked_add(frame.timestamp_us))
-                    .ok_or("timeline exhausted")?;
-                tokio::time::sleep_until(started + Duration::from_micros(frame.timestamp_us)).await;
+                frame.timestamp_us = output_time;
+                tokio::time::sleep_until(started + Duration::from_micros(output_time)).await;
                 publisher.send(&frame, SETUP).await?;
+                output_time = output_time
+                    .checked_add(u64::from(frame.duration_us))
+                    .ok_or("timeline exhausted")?;
+                index += 1;
             }
             if !looping {
                 // 留出下游本地驻留窗口的排空时间，不代表实际播放确认。
@@ -345,11 +356,12 @@ async fn main() -> Result<(), Error> {
         Some("init") if args.len() == 2 => init(&args[1]),
         Some("relay") if args.len() == 5 => relay(&args[1..]).await,
         Some("publish") if (7..=8).contains(&args.len()) => publish(&args[1..]).await,
+        Some("live") if args.len() == 7 => live::run(&args[1..]).await,
         Some("receive") if args.len() == 7 => receive(&args[1..]).await,
         Some("play") if (6..=8).contains(&args.len()) => playback::play(&args[1..]).await,
         Some("--help") | None => {
             println!(
-                "peri init DIR\nperi relay BIND CERT.der KEY.key RESOURCE\nperi publish ADDRESS SERVER_NAME TRUST.der RESOURCE INPUT.ivf (--all-intra|--gop) [--loop]\nperi receive ADDRESS SERVER_NAME TRUST.der RESOURCE OUTPUT.ivf COUNT\nperi play ADDRESS SERVER_NAME TRUST.der RESOURCE COUNT [--headless] [--fifo]\nCredentials: PERI_PUBLISH_TOKEN / PERI_SUBSCRIBE_TOKEN"
+                "peri init DIR\nperi relay BIND CERT.der KEY.key RESOURCE\nperi publish ADDRESS SERVER_NAME TRUST.der RESOURCE INPUT.ivf (--all-intra|--gop) [--loop]\nperi receive ADDRESS SERVER_NAME TRUST.der RESOURCE OUTPUT.ivf COUNT\nperi play ADDRESS SERVER_NAME TRUST.der RESOURCE COUNT [--headless] [--fifo]\nperi live ADDRESS SERVER_NAME TRUST.der RESOURCE WORKER.py COUNT\nCredentials: PERI_PUBLISH_TOKEN / PERI_SUBSCRIBE_TOKEN"
             );
             Ok(())
         }

@@ -275,3 +275,5 @@ WSS 可以由 TLS 网关终止，但基础 Relay 默认拒绝浏览器 Origin；
 ```powershell
 pnpm run native:gop:check
 ```
+
+实时 AV1 合成测试画面发布与关键帧响应见[实时编码测试源](docs/PERI-LIVE-01.md)。
