@@ -722,6 +722,8 @@ name = "peri-transport"
 version = "0.1.0"
 dependencies = [
  "moq-net",
+ "peri-session",
+ "peri-types",
  "rcgen",
  "rustls",
  "tokio",
