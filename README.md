@@ -4,9 +4,31 @@
 支持浏览器与原生端的长期目标；P2P可选
 
 目前提供 MOQT-22 对象发布/订阅、本地 Relay 和 offer/accept/ack 双向会话协商，
-以及 Rust 原生 QUIC 直连适配，尚不支持音视频播放。浏览器参考传输使用 QMux/WebSocket。
+以及 Rust 原生 QUIC 直连适配。本地浏览器演示支持 VP8 测试视频播放，暂不包含音频。
+浏览器参考传输使用 QMux/WebSocket。
 
 ## 快速运行
+
+### 本地测试视频
+
+需要 Node.js 24+、支持 libvpx 的 FFmpeg，以及支持 WebCodecs 的 Chrome/Edge。
+
+```powershell
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm run video
+```
+
+也可使用 `npm ci --ignore-scripts` 和 `npm run video`。打开
+[本地播放器](http://127.0.0.1:8080)，点击“连接”。视频为循环播放的 640×360、30 fps
+VP8 测试图，使用 LOC 和 MSF catalog 封装；“恢复画面”会等待下一个关键帧恢复解码。
+
+可通过 `PERI_VIDEO_PORT` 指定端口，通过 `PERI_FFMPEG` 指定 FFmpeg 可执行文件路径。
+服务仅绑定本机，使用 localhost 安全上下文和 MoQ/WebSocket 兼容传输。
+普通局域网 HTTP 地址、HTTPS/WebTransport 视频接入、音频和实时采集尚未包含。
+
+安装 Chrome 后可运行 `pnpm run video:check` 检查播放、中途加入和关键帧恢复。
+
+### 对象传输与会话协商
 
 需要 Node.js 24+，支持 **pnpm 和 npm**。项目使用 pnpm 11.18.0，提供
 `pnpm-lock.yaml` 和 `package-lock.json`，安装时选用对应的锁文件。
