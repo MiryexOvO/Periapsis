@@ -8,7 +8,7 @@ export const MAX_OBJECT_BYTES = 1024 * 1024;
 
 /** Pin draft-22 and reject silent moq-lite negotiation. QMux is a compatibility transport. */
 /** 固定 draft-22，拒绝静默切换到 moq-lite；QMux 提供兼容传输。 */
-export async function connect(url: URL, role: "publish" | "subscribe" | "duplex", timeoutMs = 5000) {
+export async function connect(url: URL, role: "publish" | "subscribe" | "duplex", timeoutMs = 5000, certificateHash?: string) {
   const origin = new Moq.Origin.Producer();
   let transport: WebTransport | undefined;
   try {
@@ -16,7 +16,9 @@ export async function connect(url: URL, role: "publish" | "subscribe" | "duplex"
       transport = new QMux(url, { protocols: [QMUX_PROTOCOL], requireProtocol: true });
     } else if (url.protocol === "https:") {
       if (typeof WebTransport === "undefined") throw new Error("WebTransport unavailable in this runtime; use ws:/wss: compatibility or a native QUIC client");
-      const options: WebTransportOptions & { protocols: string[] } = { protocols: [MOQT_PROTOCOL] };
+      if (certificateHash && !/^[a-f0-9]{64}$/.test(certificateHash)) throw new Error("invalid certificate hash");
+      const options: WebTransportOptions & { protocols: string[] } = { protocols: [MOQT_PROTOCOL],
+        ...(certificateHash ? { serverCertificateHashes: [{ algorithm: "sha-256", value: Uint8Array.from(certificateHash.match(/../g)!, hex => parseInt(hex, 16)).buffer }] } : {}) };
       transport = new WebTransport(url, options);
     } else {
       throw new Error("expected https: for WebTransport or ws:/wss: for QMux compatibility");

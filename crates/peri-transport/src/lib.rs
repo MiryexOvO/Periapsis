@@ -10,6 +10,25 @@ use web_transport_quinn::{Session as Transport, quinn};
 
 pub const ALPN: &[u8] = b"moqt-22";
 
+/// Accept MOQT-22 on an already authorized HTTP/3 WebTransport session.
+/// 在已完成访问授权的 HTTP/3 WebTransport 会话上接受 MOQT-22。
+pub async fn accept_webtransport(
+    transport: Transport,
+    origin: &moq::origin::Producer,
+) -> Result<Session, moq::Error> {
+    let connection = std::ops::Deref::deref(&transport).clone();
+    let (inner, driver) = moq::Server::new()
+        .with_versions(version().into())
+        .with_publisher(origin)
+        .accept(Instant::now(), compat::Compat(transport))
+        .await?;
+    Ok(Session {
+        inner,
+        driver: tokio::spawn(moq::time::run(driver)),
+        connection,
+    })
+}
+
 fn version() -> moq::Version {
     "moq-transport-22"
         .parse()
