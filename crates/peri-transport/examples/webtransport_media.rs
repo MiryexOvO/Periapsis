@@ -16,6 +16,7 @@ struct Config {
 }
 #[derive(Deserialize)]
 struct Frame {
+    track: String,
     payload: String,
     timestamp: u64,
     keyframe: bool,
@@ -61,6 +62,7 @@ async fn main() -> Result<(), Error> {
     let broadcast = origin.create_broadcast("peri/test-video")?;
     let catalog = broadcast.create_track("catalog", None)?;
     let track = broadcast.create_track("video", None)?;
+    let audio_track = broadcast.create_track("audio", None)?;
     let bytes = STANDARD.decode(&config.catalog)?;
     if bytes.len() > 16384 {
         return Err("catalog too large".into());
@@ -75,18 +77,24 @@ async fn main() -> Result<(), Error> {
     );
     std::io::stdout().flush()?;
     let producer = tokio::spawn(async move {
-        let mut group: Option<moq::group::Producer> = None;
+        let mut groups: [Option<moq::group::Producer>; 2] = [None, None];
         loop {
             let message: Frame = serde_json::from_slice(&line(&mut input).await?)?;
             let bytes = STANDARD.decode(message.payload)?;
             if bytes.len() > 1024 * 1024 {
                 return Err::<(), Error>("video object too large".into());
             }
+            let (index, source) = match message.track.as_str() {
+                "video" => (0, &track),
+                "audio" => (1, &audio_track),
+                _ => return Err("unknown media track".into()),
+            };
+            let group = &mut groups[index];
             if message.keyframe {
                 if let Some(previous) = group.take() {
                     previous.finish()?;
                 }
-                group = Some(track.append_group()?);
+                *group = Some(source.append_group()?);
             }
             group
                 .as_mut()

@@ -10,6 +10,7 @@ import { build } from "esbuild";
 import * as Moq from "@moq/net";
 import * as Loc from "@moq/loc";
 import * as Msf from "./media-catalog.ts";
+import { parseOggOpus } from "./opus.ts";
 import { parseIvf } from "./ivf.ts";
 import { connect } from "./transport.ts";
 import { startRelay } from "./relay.ts";
@@ -24,8 +25,13 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
   const ffmpeg = spawnSync(process.env.PERI_FFMPEG ?? "ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "3", "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8", "-g", "30", "-auto-alt-ref", "0", "-b:v", "700k", "-f", "ivf", input], { cwd: root, windowsHide: true, encoding: "utf8" });
   if (ffmpeg.error || ffmpeg.status !== 0) throw new Error(`FFmpeg VP8 generation failed: ${ffmpeg.error?.message ?? ffmpeg.stderr}`);
   const video = parseIvf(await readFile(input));
+  const audioInput = fileURLToPath(new URL("../dist/test.opus", import.meta.url));
+  const audioResult = spawnSync(process.env.PERI_FFMPEG ?? "ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "3.2", "-c:a", "libopus", "-ac", "1", "-frame_duration", "20", "-b:a", "64k", audioInput], { cwd: root, windowsHide: true, encoding: "utf8" });
+  if (audioResult.error || audioResult.status !== 0) throw new Error("FFmpeg Opus generation failed");
+  const audioPackets = parseOggOpus(await readFile(audioInput)).slice(0, 150);
+  if (audioPackets.length !== 150) throw new Error("missing Opus packets");
   if (transport === "webtransport") {
-    const result = spawnSync("cargo", ["build", "--locked", "-p", "peri-transport", "--example", "webtransport_video"], { cwd: root, stdio: "inherit", windowsHide: true });
+    const result = spawnSync("cargo", ["build", "--locked", "-p", "peri-transport", "--example", "webtransport_media"], { cwd: root, stdio: "inherit", windowsHide: true });
     if (result.error || result.status !== 0) throw new Error("Rust WebTransport gateway build failed");
   }
   await build({ entryPoints: [fileURLToPath(new URL("./video-player.ts", import.meta.url))], bundle: true, platform: "browser", format: "esm", outfile: fileURLToPath(new URL("../dist/player.js", import.meta.url)) });
@@ -54,15 +60,17 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
   const catalog = broadcast.createTrack("catalog", { maxAge: Moq.Time.Milli(2000) });
   const track = broadcast.createTrack("video", { maxAge: Moq.Time.Milli(2000) });
   const encoded = new Loc.Producer(track);
+  const audioTrack = broadcast.createTrack("audio", { maxAge: Moq.Time.Milli(2000) });
+  const audioEncoded = new Loc.Producer(audioTrack);
   const group = catalog.appendGroup();
-  const catalogBytes = Msf.encode({ tracks: [{ name: "video", packaging: "loc", role: "video", codec: "vp8", width: video.width, height: video.height, framerate: video.framerate, isLive: true }] });
+  const catalogBytes = Msf.encode({ tracks: [{ name: "video", packaging: "loc", role: "video", codec: "vp8", width: video.width, height: video.height, framerate: video.framerate, isLive: true }, { name: "audio", packaging: "loc", role: "audio", codec: "opus", samplerate: 48000, channelConfig: "1", isLive: true }] });
   group.writeFrame({ payload: catalogBytes, timestamp: Moq.Time.Timestamp.now() }); group.close();
   broadcast.announce();
   let index = 0, cycle = 0, stopped = false;
   let gateway: ReturnType<typeof spawn> | undefined;
   if (transport === "webtransport") {
     try {
-    gateway = spawn(resolve(process.env.CARGO_TARGET_DIR ?? resolve(root, "target"), "debug/examples", process.platform === "win32" ? "webtransport_video.exe" : "webtransport_video"), [], { cwd: root, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+    gateway = spawn(resolve(process.env.CARGO_TARGET_DIR ?? resolve(root, "target"), "debug/examples", process.platform === "win32" ? "webtransport_media.exe" : "webtransport_media"), [], { cwd: root, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
     const child = gateway;
     child.stdin!.on("error", () => {});
     const lines = createInterface({ input: child.stdout! });
@@ -75,19 +83,21 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
     });
     const endpoint = new URL(ready.url); endpoint.searchParams.set("token", subscribeToken);
     config = { url: endpoint.toString(), path: "peri/test-video", certificateHash: ready.hash };
-    const subscription = track.subscribe();
+    for (const [name, source] of [["video", track], ["audio", audioTrack]] as const) {
+    const subscription = source.subscribe();
     void (async () => {
-      const loc = new Loc.Format("video");
+      const loc = new Loc.Format(name);
       while (!stopped) {
         const group = await subscription.recvGroup(); if (!group) break;
         try { for (;;) {
           const frame = await group.readFrame(); if (!frame || stopped) break;
           const media = loc.decode(frame.payload)[0]!;
-          const message = JSON.stringify({ payload: Buffer.from(frame.payload).toString("base64"), timestamp: media.timestamp, keyframe: (media.payload[0]! & 1) === 0 }) + "\n";
+          const message = JSON.stringify({ track: name, payload: Buffer.from(frame.payload).toString("base64"), timestamp: media.timestamp, keyframe: name === "audio" ? media.timestamp % 1_000_000 === 0 : (media.payload[0]! & 1) === 0 }) + "\n";
           if (!child.stdin!.write(message)) await once(child.stdin!, "drain");
         } } finally { group.close(); }
       }
     })().catch(error => { if (!stopped) console.error("WebTransport media input failed:", error.message); }).finally(() => subscription.close());
+    }
     } catch (error) {
       gateway?.kill(); publisher.close(); await relay.close();
       await new Promise<void>(resolve => server.close(() => resolve()));
@@ -105,5 +115,15 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
     timer = setTimeout(tick, Math.max(0, started + next / 1000 - performance.now()));
   };
   tick();
-  return { url, async close() { stopped = true; clearTimeout(timer); encoded.close(); catalog.close(); broadcast.close(); publisher.close(); gateway?.kill(); await relay.close(); await new Promise<void>(resolve => server.close(() => resolve())); } };
+  let audioIndex = 0, audioCycle = 0;
+  let audioTimer: ReturnType<typeof setTimeout>;
+  const audioTick = () => {
+    if (stopped) return;
+    const timestamp = (audioCycle * 150 + audioIndex) * 20000;
+    audioEncoded.encode(audioPackets[audioIndex]!, Moq.Time.Micro(timestamp), audioIndex % 50 === 0);
+    if (++audioIndex === 150) { audioIndex = 0; audioCycle++; }
+    audioTimer = setTimeout(audioTick, Math.max(0, started + (audioCycle * 150 + audioIndex) * 20 - performance.now()));
+  };
+  audioTick();
+  return { url, async close() { stopped = true; clearTimeout(timer); clearTimeout(audioTimer); audioEncoded.close(); encoded.close(); catalog.close(); broadcast.close(); publisher.close(); gateway?.kill(); await relay.close(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
