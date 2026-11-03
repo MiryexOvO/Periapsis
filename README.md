@@ -4,14 +4,14 @@
 支持浏览器与原生端的长期目标；P2P可选
 
 目前提供 MOQT-22 对象发布/订阅、本地 Relay 和 offer/accept/ack 双向会话协商，
-以及 Rust 原生 QUIC 直连适配。本地浏览器演示支持 VP8 测试视频播放，暂不包含音频。
+以及 Rust 原生 QUIC 直连适配。本地浏览器演示支持 VP8 + Opus 测试音视频播放。
 浏览器支持 WebTransport，以及 QMux/WebSocket 兼容模式。
 
 ## 快速运行
 
-### 本地测试视频
+### 本地测试音视频
 
-需要 Node.js 24+、支持 libvpx 的 FFmpeg，以及支持 WebCodecs 的 Chrome/Edge。
+需要 Node.js 24+、支持 libvpx/libopus 的 FFmpeg，以及支持音视频 WebCodecs 的 Chrome/Edge。
 
 ```powershell
 pnpm install --frozen-lockfile --ignore-scripts
@@ -20,11 +20,14 @@ pnpm run video
 
 也可使用 `npm ci --ignore-scripts` 和 `npm run video`。打开
 [本地播放器](http://127.0.0.1:8080)，点击“连接”。视频为循环播放的 640×360、30 fps
-VP8 测试图，使用 LOC 和 MSF catalog 封装；“恢复画面”会等待下一个关键帧恢复解码。
+VP8 测试图和 48 kHz 单声道 Opus 测试音，使用 LOC 和 MSF catalog 封装。
+点击“连接”后开始播放 880 Hz 测试音，可使用“静音”关闭声音。
+视频按音频播放时钟显示；“恢复画面”会等待下一个关键帧恢复解码。
+播放器限制音频排队和视频帧队列，过期视频帧会被丢弃。
 
 可通过 `PERI_VIDEO_PORT` 指定端口，通过 `PERI_FFMPEG` 指定 FFmpeg 可执行文件路径。
 服务仅绑定本机，使用 localhost 安全上下文和 MoQ/WebSocket 兼容传输。
-普通局域网 HTTP 地址、音频和实时采集尚未包含。
+普通局域网 HTTP 地址和实时采集尚未包含。
 
 本地 WebTransport/QUIC 视频模式还需要 Rust 工具链：
 
@@ -36,7 +39,7 @@ pnpm run video:quic
 QUIC 接收；使用短期证书和指纹校验，不需要手动安装证书。当前仍仅限本机，
 公网 HTTPS 网页及域名证书部署尚未包含。默认 `pnpm run video` 保留 WebSocket 兼容模式。
 
-安装 Chrome 后可运行 `pnpm run video:check` 检查播放、中途加入和关键帧恢复。
+安装 Chrome 后可运行 `pnpm run video:check` 检查音视频播放、中途加入、静音和关键帧恢复。
 `pnpm run video:quic:check` 会检查 WebTransport 模式及错误证书、错误令牌的拒绝行为。
 
 ### 对象传输与会话协商

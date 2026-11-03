@@ -13,6 +13,17 @@ try {
   const wire = await first.locator("#metrics").getAttribute("data-transport");
   if (wire !== (quic ? "webtransport" : "websocket")) throw new Error(`Unexpected transport: ${wire}`);
   console.log(`Verified browser transport: ${wire}`);
+  for (const page of [first, late]) {
+    await page.waitForFunction(() => {
+      const stats = document.querySelector<HTMLElement>("#metrics")!.dataset;
+      return Number(stats.audioPackets) > 30 && Number(stats.audioEnergy) > 0.001 && stats.audioState === "running";
+    }, undefined, { timeout: 10000 });
+    const stats = await page.locator("#metrics").evaluate(element => ({ ...((element as HTMLElement).dataset) }));
+    if (Number(stats.audioBufferMs) > 360) throw new Error("unbounded audio buffer");
+    console.log(`Verified Opus playback: packets=${stats.audioPackets}, buffer=${stats.audioBufferMs}ms, scheduled video skew=${stats.skewMs}ms`);
+  }
+  await first.click("#mute");
+  if (await first.locator("#mute").textContent() !== "取消静音") throw new Error("mute failed");
   if (quic) {
     const rejected = await first.evaluate(async () => {
       const config = await fetch("/config").then(r => r.json());
