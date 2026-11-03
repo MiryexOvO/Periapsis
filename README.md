@@ -1,4 +1,4 @@
-# NovaStream / NSP
+# Periapsis / PERI
 
 基于标准 MoQ 的现代流媒体会话与媒体策略研发工程。面向直播、实时互动、桌面和游戏串流，
 支持浏览器与原生端的长期目标；P2P可选
@@ -31,7 +31,7 @@ npm run demo
 npm run handshake
 ```
 
-Demo 自动启动随机端口 Relay、建立发布/订阅连接，通过 MOQT 发送 NSP hello，
+Demo 自动启动随机端口 Relay、建立发布/订阅连接，通过 MOQT 发送 PERI hello，
 在接收端执行能力选择，再发送 64 KiB 随机对象并核对 SHA-256。完成后自动关闭。
 成功输出包含 `moq-transport-22`、`websocket`、`sentBytes: 65536`、`receivedBytes: 65536`。
 `demo` 保留单向 hello 与对象完整性诊断；hello 的结果在接收端本地计算。
@@ -45,33 +45,33 @@ Demo 自动启动随机端口 Relay、建立发布/订阅连接，通过 MOQT �
 所有终端配置相同的环境变量。以下值仅为本地演示，应替换成随机值：
 
 ```powershell
-$env:NSP_PUBLISH_TOKEN = 'local-publisher-example-123456'
-$env:NSP_SUBSCRIBE_TOKEN = 'local-subscriber-example-654321'
-$env:NSP_RELAY_URL = 'ws://127.0.0.1:4443/moq'
+$env:PERI_PUBLISH_TOKEN = 'local-publisher-example-123456'
+$env:PERI_SUBSCRIBE_TOKEN = 'local-subscriber-example-654321'
+$env:PERI_RELAY_URL = 'ws://127.0.0.1:4443/moq'
 ```
 
 使用 pnpm 时，终端 A 运行 `pnpm run dev`，终端 B 运行：
 
 ```powershell
-pnpm run object publish README.md nsp/probe
+pnpm run object publish README.md peri/probe
 ```
 
 终端 C 运行：
 
 ```powershell
-pnpm run object subscribe received.bin nsp/probe
+pnpm run object subscribe received.bin peri/probe
 ```
 
 使用 npm 时，终端 A 运行 `npm run dev`，终端 B 运行：
 
 ```powershell
-npm run object -- publish README.md nsp/probe
+npm run object -- publish README.md peri/probe
 ```
 
 终端 C：
 
 ```powershell
-npm run object -- subscribe received.bin nsp/probe
+npm run object -- subscribe received.bin peri/probe
 ```
 
 发布端保持运行至 Ctrl+C。接收端拒绝覆盖现有文件。对象限制 1 byte–1 MiB；这是通用对象
@@ -104,7 +104,7 @@ cargo test --workspace
 单独运行原生 QUIC 对象传输检查：
 
 ```powershell
-cargo test -p nsp-transport --test native_quic
+cargo test -p peri-transport --test native_quic
 ```
 
 该测试使用本机 UDP、TLS 证书校验和固定的 MOQT-22 ALPN，比较发送与接收的对象内容。

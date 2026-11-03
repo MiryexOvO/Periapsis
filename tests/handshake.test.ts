@@ -26,24 +26,24 @@ test("both sides activate only after the offer/accept/ack exchange", () => {
 });
 test("a fabricated acceptance cannot relax the buffer budget", () => {
   const { a, b, offer } = pair(); const accept = b.receive(offer)!;
-  assert.equal(accept.type, "nsp.accept");
-  if (accept.type !== "nsp.accept") throw new Error("expected accept");
+  assert.equal(accept.type, "peri.accept");
+  if (accept.type !== "peri.accept") throw new Error("expected accept");
   (accept.agreement as Agreement).maxBufferMs++;
   assert.throws(() => a.receive(wire(accept)), /agreement mismatch/);
   assert.equal(a.state, "REJECTED"); assert.equal(a.agreement, undefined);
 });
 test("agreement property order is irrelevant", () => {
   const { a, b, offer } = pair(); const accept = b.receive(offer)!;
-  if (accept.type !== "nsp.accept") throw new Error("expected accept");
+  if (accept.type !== "peri.accept") throw new Error("expected accept");
   accept.agreement = Object.fromEntries(Object.entries(accept.agreement as Agreement).reverse());
-  assert.equal(a.receive(wire(accept))!.type, "nsp.ack");
+  assert.equal(a.receive(wire(accept))!.type, "peri.ack");
 });
 test("wrong sessions and premature acknowledgements fail closed", () => {
   const { b } = pair();
-  assert.throws(() => b.receive({ type: "nsp.ack", sessionId: "ffffffffffffffffffffffffffffffff" }), /session mismatch/);
+  assert.throws(() => b.receive({ type: "peri.ack", sessionId: "ffffffffffffffffffffffffffffffff" }), /session mismatch/);
   assert.equal(b.state, "REJECTED");
   const second = pair().b;
-  assert.throws(() => second.receive({ type: "nsp.ack", sessionId: id }), /unexpected/);
+  assert.throws(() => second.receive({ type: "peri.ack", sessionId: id }), /unexpected/);
 });
 test("replayed ACK after activation revokes the active agreement", () => {
   const { a, b, offer } = pair(); const ack = a.receive(b.receive(offer)!)!;
@@ -58,8 +58,8 @@ test("closing invalidates media permission and cannot reopen the session", () =>
 });
 test("rejects malformed, oversized and unsupported control messages", () => {
   assert.throws(() => decodeControl(new Uint8Array(16 * 1024 + 1)), /too large/);
-  assert.throws(() => decodeControl(new TextEncoder().encode(JSON.stringify({ type: "nsp.ack", sessionId: "bad" }))), /envelope/);
-  assert.throws(() => decodeControl(new TextEncoder().encode(JSON.stringify({ type: "nsp.future", sessionId: id }))), /unsupported/);
+  assert.throws(() => decodeControl(new TextEncoder().encode(JSON.stringify({ type: "peri.ack", sessionId: "bad" }))), /envelope/);
+  assert.throws(() => decodeControl(new TextEncoder().encode(JSON.stringify({ type: "peri.future", sessionId: id }))), /unsupported/);
   const endpoint = new Handshake("initiator", id, defaultHello());
   assert.throws(() => endpoint.transportReady("moq-lite-02"), /MOQT/);
   assert.equal(endpoint.state, "REJECTED");

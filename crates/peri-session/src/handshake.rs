@@ -2,7 +2,7 @@
 //! 与传输实现无关的双向协商状态机；身份认证由连接层负责。
 
 use crate::{negotiate, validate};
-use nsp_types::{Agreement, Hello, NegotiationError};
+use peri_types::{Agreement, Hello, NegotiationError};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -30,14 +30,14 @@ pub enum State {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Message {
-    #[serde(rename = "nsp.offer")]
+    #[serde(rename = "peri.offer")]
     Offer {
         #[serde(rename = "sessionId")]
         session_id: String,
         #[serde(with = "crate::wire::hello")]
         hello: Hello,
     },
-    #[serde(rename = "nsp.accept")]
+    #[serde(rename = "peri.accept")]
     Accept {
         #[serde(rename = "sessionId")]
         session_id: String,
@@ -46,12 +46,12 @@ pub enum Message {
         #[serde(with = "crate::wire::agreement")]
         agreement: Agreement,
     },
-    #[serde(rename = "nsp.ack")]
+    #[serde(rename = "peri.ack")]
     Ack {
         #[serde(rename = "sessionId")]
         session_id: String,
     },
-    #[serde(rename = "nsp.reject")]
+    #[serde(rename = "peri.reject")]
     Reject {
         #[serde(rename = "sessionId")]
         session_id: String,
@@ -82,7 +82,7 @@ pub enum HandshakeError {
 
 impl fmt::Display for HandshakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "NSP handshake: {self:?}")
+        write!(f, "PERI handshake: {self:?}")
     }
 }
 impl std::error::Error for HandshakeError {}
@@ -244,10 +244,10 @@ impl Handshake {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nsp_types::{NSP_VERSION, Profile};
+    use peri_types::{PERI_VERSION, Profile};
     fn hello() -> Hello {
         Hello {
-            version: NSP_VERSION,
+            version: PERI_VERSION,
             profiles: vec![Profile::Live],
             codecs: vec!["application/octet-stream".into()],
             extensions: vec![],
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn lite_transport_cannot_start_nsp_negotiation() {
+    fn lite_transport_cannot_start_peri_negotiation() {
         let mut endpoint = Handshake::new(
             Role::Initiator,
             "0123456789abcdef0123456789abcdef".into(),

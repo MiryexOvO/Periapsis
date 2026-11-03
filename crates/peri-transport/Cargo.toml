@@ -1,5 +1,5 @@
 [package]
-name = "nsp-transport"
+name = "peri-transport"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -25,9 +25,9 @@ test("real MoQ exchange activates two peers before opaque media-object transfer"
     for (const result of results) if (result.status === "rejected") throw result.reason;
     assert.deepEqual(peers.map(p => p.state), ["ACTIVE", "ACTIVE"]);
     assert.deepEqual(peers[0]!.agreement, peers[1]!.agreement);
-    const sender = publishTrack(peers[0]!.origin, `nsp/${id}/data`, "probe");
+    const sender = publishTrack(peers[0]!.origin, `peri/${id}/data`, "probe");
     const payload = randomBytes(32 * 1024); sender.write(payload);
-    const reader = await subscribeTrack(peers[1]!.origin, `nsp/${id}/data`, "probe");
+    const reader = await subscribeTrack(peers[1]!.origin, `peri/${id}/data`, "probe");
     try { assert.deepEqual(await reader.read(), new Uint8Array(payload)); }
     finally { reader.close(); sender.close(); }
     peers[0]!.close(); assert.equal(peers[0]!.state, "CLOSED");

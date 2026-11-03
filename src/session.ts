@@ -1,6 +1,6 @@
-/** NSP application conventions preserve MOQT framing and SETUP semantics. */
-/** NSP 应用层约定，沿用 MOQT 自身的帧格式和 SETUP 机制。 */
-export const NSP_VERSION = 1;
+/** PERI application conventions preserve MOQT framing and SETUP semantics. */
+/** PERI 应用层约定，沿用 MOQT 自身的帧格式和 SETUP 机制。 */
+export const PERI_VERSION = 1;
 export const MAX_CONTROL_BYTES = 16 * 1024;
 export const PROFILES = {
   interactive: { targetBufferMs: 35, maxBufferMs: 100 },
@@ -9,14 +9,14 @@ export const PROFILES = {
 } as const;
 export type Profile = keyof typeof PROFILES;
 export interface Hello {
-  type: "nsp.hello";
+  type: "peri.hello";
   version: number;
   profiles: Profile[];
   codecs: string[];
   extensions: { id: string; version: number; required: boolean }[];
 }
 export interface Agreement {
-  type: "nsp.accept";
+  type: "peri.accept";
   version: 1;
   profile: Profile;
   codecs: string[];
@@ -34,10 +34,10 @@ function strings(value: unknown): value is string[] {
 export function parseHello(bytes: Uint8Array): Hello {
   if (bytes.byteLength > MAX_CONTROL_BYTES) throw new Error("control message too large");
   const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  if (!object(value) || value.type !== "nsp.hello" || !Number.isSafeInteger(value.version) ||
+  if (!object(value) || value.type !== "peri.hello" || !Number.isSafeInteger(value.version) ||
       !strings(value.profiles) || !value.profiles.every(p => Object.hasOwn(PROFILES, p)) ||
       !strings(value.codecs) || !Array.isArray(value.extensions) || value.extensions.length > 32) {
-    throw new Error("invalid NSP hello");
+    throw new Error("invalid PERI hello");
   }
   const ids = new Set<string>();
   for (const extension of value.extensions) {
@@ -53,7 +53,7 @@ export function parseHello(bytes: Uint8Array): Hello {
 export function negotiate(local: Hello, remote: Hello): Agreement {
   // 即使调用方绕过网络解析器，也要校验双方的能力声明。
   for (const hello of [local, remote]) parseHello(new TextEncoder().encode(JSON.stringify(hello)));
-  if (local.version !== NSP_VERSION || remote.version !== NSP_VERSION) throw new Error("unsupported NSP version");
+  if (local.version !== PERI_VERSION || remote.version !== PERI_VERSION) throw new Error("unsupported PERI version");
   const profile = local.profiles.find(p => remote.profiles.includes(p));
   if (!profile) throw new Error("no common profile");
   const codecs = local.codecs.filter(c => remote.codecs.includes(c));
@@ -67,8 +67,8 @@ export function negotiate(local: Hello, remote: Hello): Agreement {
   }
   const extensions = local.extensions.filter(e => remote.extensions.some(r => r.id === e.id && r.version === e.version))
     .map(({ id, version }) => ({ id, version }));
-  return { type: "nsp.accept", version: NSP_VERSION, profile, codecs, extensions, ...PROFILES[profile] };
+  return { type: "peri.accept", version: PERI_VERSION, profile, codecs, extensions, ...PROFILES[profile] };
 }
 export function defaultHello(profile: Profile = "live"): Hello {
-  return { type: "nsp.hello", version: 1, profiles: [profile], codecs: ["application/octet-stream"], extensions: [] };
+  return { type: "peri.hello", version: 1, profiles: [profile], codecs: ["application/octet-stream"], extensions: [] };
 }

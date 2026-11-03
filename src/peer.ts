@@ -8,17 +8,17 @@ import { connect, publishTrack, subscribeTrack } from "./transport.ts";
 export async function openPeer(url: URL, role: Role, sessionId: string, hello: Hello = defaultHello(), timeoutMs = 5000) {
   const handshake = new Handshake(role, sessionId, hello);
   const peer = await connect(url, "duplex", timeoutMs);
-  const outgoingPath = `nsp/${sessionId}/${role}`;
-  const incomingPath = `nsp/${sessionId}/${role === "initiator" ? "responder" : "initiator"}`;
+  const outgoingPath = `peri/${sessionId}/${role}`;
+  const incomingPath = `peri/${sessionId}/${role === "initiator" ? "responder" : "initiator"}`;
   let output: ReturnType<typeof publishTrack> | undefined;
   let input: Awaited<ReturnType<typeof subscribeTrack>> | undefined;
   void peer.connection.closed.then(() => { handshake.close(); input?.close(); output?.close(); });
   try {
     handshake.transportReady(peer.connection.version);
-    output = publishTrack(peer.origin, outgoingPath, "nsp.control");
+    output = publishTrack(peer.origin, outgoingPath, "peri.control");
     const offer = handshake.start();
     if (offer) output.write(encodeControl(offer));
-    input = await subscribeTrack(peer.origin, incomingPath, "nsp.control", timeoutMs);
+    input = await subscribeTrack(peer.origin, incomingPath, "peri.control", timeoutMs);
     while (handshake.state !== "ACTIVE") {
       const payload = await input.read();
       if (!payload) throw new Error("control track ended before activation");
@@ -26,7 +26,7 @@ export async function openPeer(url: URL, role: Role, sessionId: string, hello: H
       const reply = handshake.receive(message);
       if (reply) {
         output.write(encodeControl(reply));
-        if (reply.type === "nsp.ack") handshake.ackSent();
+        if (reply.type === "peri.ack") handshake.ackSent();
       }
     }
     return { origin: peer.origin, connection: peer.connection,
@@ -39,7 +39,7 @@ export async function openPeer(url: URL, role: Role, sessionId: string, hello: H
       close() { handshake.close(); input?.close(); output?.close(); peer.close(); } };
   } catch (error) {
     if (output) {
-      try { output.write(encodeControl({ type: "nsp.reject", sessionId })); } catch { /* 控制轨道可能已随传输关闭。 */ }
+      try { output.write(encodeControl({ type: "peri.reject", sessionId })); } catch { /* 控制轨道可能已随传输关闭。 */ }
     }
     handshake.close(); input?.close(); output?.close(); peer.close();
     throw error;
