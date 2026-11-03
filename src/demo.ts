@@ -15,18 +15,18 @@ const deadline = setTimeout(() => { console.error("demo timed out"); process.exi
 try {
   const pub = await connect(endpoint("publish", publishToken), "publish"); cleanups.push(() => pub.close());
   const sub = await connect(endpoint("subscribe", subscribeToken), "subscribe"); cleanups.push(() => sub.close());
-  const control = publishTrack(pub.origin, "nsp-demo/control", "hello"); cleanups.push(() => control.close());
+  const control = publishTrack(pub.origin, "peri-demo/control", "hello"); cleanups.push(() => control.close());
   control.write(new TextEncoder().encode(JSON.stringify(defaultHello())));
-  const receiver = await subscribeTrack(sub.origin, "nsp-demo/control", "hello"); cleanups.push(() => receiver.close());
+  const receiver = await subscribeTrack(sub.origin, "peri-demo/control", "hello"); cleanups.push(() => receiver.close());
   const hello = await receiver.read();
   if (!hello) throw new Error("missing hello");
   const agreement = negotiate(defaultHello(), parseHello(hello));
   // 通过任意字节对象验证传输完整性，尚未采用 LOC/MSF 媒体封装。
-  const sender = publishTrack(pub.origin, "nsp-demo/probe", "bytes"); cleanups.push(() => sender.close());
+  const sender = publishTrack(pub.origin, "peri-demo/probe", "bytes"); cleanups.push(() => sender.close());
   const payload = randomBytes(64 * 1024);
   const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
   sender.write(payload);
-  const reader = await subscribeTrack(sub.origin, "nsp-demo/probe", "bytes"); cleanups.push(() => reader.close());
+  const reader = await subscribeTrack(sub.origin, "peri-demo/probe", "bytes"); cleanups.push(() => reader.close());
   const received = await reader.read();
   if (!received || digest(payload) !== digest(received)) throw new Error("object integrity mismatch");
   console.log(JSON.stringify({ protocol: pub.connection.version, transport: pub.connection.transport,

@@ -2,7 +2,7 @@
 //! 有大小限制的 JSON 应用层控制消息，格式与 TypeScript 参考端一致。
 
 use crate::{handshake::Message, validate};
-use nsp_types::{Agreement, Hello, MAX_CONTROL_BYTES};
+use peri_types::{Agreement, Hello, MAX_CONTROL_BYTES};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
@@ -66,14 +66,14 @@ pub(crate) mod hello {
     use super::*;
     pub fn serialize<S: Serializer>(value: &Hello, serializer: S) -> Result<S::Ok, S::Error> {
         TaggedHello {
-            kind: "nsp.hello".into(),
+            kind: "peri.hello".into(),
             value: value.clone(),
         }
         .serialize(serializer)
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Hello, D::Error> {
         let tagged = TaggedHello::deserialize(deserializer)?;
-        if tagged.kind != "nsp.hello" {
+        if tagged.kind != "peri.hello" {
             return Err(serde::de::Error::custom("invalid hello type"));
         }
         Ok(tagged.value)
@@ -83,14 +83,14 @@ pub(crate) mod agreement {
     use super::*;
     pub fn serialize<S: Serializer>(value: &Agreement, serializer: S) -> Result<S::Ok, S::Error> {
         TaggedAgreement {
-            kind: "nsp.accept".into(),
+            kind: "peri.accept".into(),
             value: value.clone(),
         }
         .serialize(serializer)
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Agreement, D::Error> {
         let tagged = TaggedAgreement::deserialize(deserializer)?;
-        if tagged.kind != "nsp.accept" {
+        if tagged.kind != "peri.accept" {
             return Err(serde::de::Error::custom("invalid agreement type"));
         }
         Ok(tagged.value)
@@ -100,7 +100,7 @@ pub(crate) mod agreement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const ACK: &[u8] = br#"{"type":"nsp.ack","sessionId":"0123456789abcdef0123456789abcdef"}"#;
+    const ACK: &[u8] = br#"{"type":"peri.ack","sessionId":"0123456789abcdef0123456789abcdef"}"#;
     #[test]
     fn controls_round_trip() {
         let message = decode(ACK).unwrap();
@@ -111,10 +111,10 @@ mod tests {
         assert!(decode(&vec![0; MAX_CONTROL_BYTES + 1]).is_err());
         assert!(decode(b"{}").is_err());
         assert!(decode(&[255]).is_err());
-        assert!(decode(br#"{"type":"nsp.ack","sessionId":"bad"}"#).is_err());
+        assert!(decode(br#"{"type":"peri.ack","sessionId":"bad"}"#).is_err());
     }
     #[test]
     fn nested_hello_requires_its_type_tag() {
-        assert!(decode(br#"{"type":"nsp.offer","sessionId":"0123456789abcdef0123456789abcdef","hello":{"version":1,"profiles":["live"],"codecs":["application/octet-stream"],"extensions":[]}}"#).is_err());
+        assert!(decode(br#"{"type":"peri.offer","sessionId":"0123456789abcdef0123456789abcdef","hello":{"version":1,"profiles":["live"],"codecs":["application/octet-stream"],"extensions":[]}}"#).is_err());
     }
 }

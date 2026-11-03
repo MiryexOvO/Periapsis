@@ -1,4 +1,4 @@
-use nsp_transport::{ALPN, moq};
+use peri_transport::{ALPN, moq};
 use std::{sync::Arc, time::Duration};
 use web_transport_quinn::quinn;
 
@@ -38,19 +38,19 @@ async fn native_moqt22_delivers_an_object() -> Result<(), Box<dyn std::error::Er
             moq::origin::Producer::new(moq::origin::Config::new(moq::Hop::new(2).unwrap()));
         let pub_task = tokio::spawn(moq::time::run(pub_driver));
         let sub_task = tokio::spawn(moq::time::run(sub_driver));
-        let broadcast = published.create_broadcast("nsp/native")?;
+        let broadcast = published.create_broadcast("peri/native")?;
         let track = broadcast.create_track("probe", None)?;
         broadcast.announce(Default::default())?;
         let incoming = async {
             let connection = server.accept().await.ok_or("server closed")?.await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                nsp_transport::accept(connection, &published).await?,
+                peri_transport::accept(connection, &published).await?,
             )
         };
         let outgoing = async {
             let connection = client.connect(server.local_addr()?, "localhost")?.await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                nsp_transport::connect(connection, received.clone()).await?,
+                peri_transport::connect(connection, received.clone()).await?,
             )
         };
         let (publisher, subscriber) = tokio::try_join!(incoming, outgoing)?;
@@ -58,10 +58,10 @@ async fn native_moqt22_delivers_an_object() -> Result<(), Box<dyn std::error::Er
         assert_eq!(publisher.inner.version().as_str(), "moq-transport-22");
         let consumer = received.consume();
         consumer
-            .routed("nsp/native")
+            .routed("peri/native")
             .await
             .ok_or("missing broadcast route")?;
-        let remote = consumer.request_broadcast("nsp/native").await?;
+        let remote = consumer.request_broadcast("peri/native").await?;
         let subscription =
             moq::track::Subscription::default().with_start(moq::track::Position::group(0));
         let mut reader = remote.track("probe")?.subscribe(subscription).await?;

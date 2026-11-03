@@ -4,7 +4,7 @@ import { defaultHello, negotiate, parseHello, MAX_CONTROL_BYTES } from "../src/s
 
 test("negotiates a bounded media profile and ignores unknown optional extensions", () => {
   const remote = defaultHello(); remote.extensions.push({ id: "future.feature", version: 1, required: false });
-  assert.deepEqual(negotiate(defaultHello(), remote), { type: "nsp.accept", version: 1, profile: "live",
+  assert.deepEqual(negotiate(defaultHello(), remote), { type: "peri.accept", version: 1, profile: "live",
     codecs: ["application/octet-stream"], extensions: [], targetBufferMs: 100, maxBufferMs: 300 });
 });
 test("critical requirements are enforced in both directions", () => {
@@ -20,6 +20,6 @@ test("rejects incompatible versions, codecs and profiles", () => {
 test("rejects oversized, malformed and duplicate control data", () => {
   assert.throws(() => parseHello(new Uint8Array(MAX_CONTROL_BYTES + 1)), /too large/);
   assert.throws(() => parseHello(new Uint8Array([255])));
-  const remote = defaultHello(); remote.extensions = Array(2).fill({ id: "nsp.clock", version: 1, required: false });
+  const remote = defaultHello(); remote.extensions = Array(2).fill({ id: "peri.clock", version: 1, required: false });
   assert.throws(() => negotiate(defaultHello(), remote), /duplicate/);
 });

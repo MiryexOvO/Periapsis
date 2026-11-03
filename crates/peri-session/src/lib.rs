@@ -1,13 +1,13 @@
-//! Deterministic NSP capability selection, independent of transport and codecs.
+//! Deterministic PERI capability selection, independent of transport and codecs.
 //! The responder calls `negotiate(local, remote)`; explicit network acknowledgement
 //! is required before a media session can become active.
-//! NSP 能力协商与具体传输和编解码实现解耦，进入活动状态前需要显式网络确认。
+//! PERI 能力协商与具体传输和编解码实现解耦，进入活动状态前需要显式网络确认。
 
 pub mod handshake;
 pub mod wire;
 
-use nsp_types::{
-    AcceptedExtension, Agreement, Hello, MAX_CAPABILITIES, NSP_VERSION, NegotiationError,
+use peri_types::{
+    AcceptedExtension, Agreement, Hello, MAX_CAPABILITIES, NegotiationError, PERI_VERSION,
 };
 
 pub fn validate(hello: &Hello) -> Result<(), NegotiationError> {
@@ -52,7 +52,7 @@ pub fn negotiate(local: &Hello, remote: &Hello) -> Result<Agreement, Negotiation
     validate(local)?;
     validate(remote)?;
     for endpoint in [local, remote] {
-        if endpoint.version != NSP_VERSION {
+        if endpoint.version != PERI_VERSION {
             return Err(NegotiationError::UnsupportedVersion(endpoint.version));
         }
     }
@@ -101,7 +101,7 @@ pub fn negotiate(local: &Hello, remote: &Hello) -> Result<Agreement, Negotiation
         })
         .collect();
     Ok(Agreement {
-        version: NSP_VERSION,
+        version: PERI_VERSION,
         profile,
         codecs,
         extensions,
@@ -112,11 +112,11 @@ pub fn negotiate(local: &Hello, remote: &Hello) -> Result<Agreement, Negotiation
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nsp_types::{Extension, Profile};
+    use peri_types::{Extension, Profile};
 
     fn hello() -> Hello {
         Hello {
-            version: NSP_VERSION,
+            version: PERI_VERSION,
             profiles: vec![Profile::Live],
             codecs: vec!["application/octet-stream".into()],
             extensions: vec![],
@@ -142,7 +142,7 @@ mod tests {
     fn required_extension_is_enforced_in_both_directions() {
         let mut remote = hello();
         remote.extensions.push(Extension {
-            id: "nsp.clock".into(),
+            id: "peri.clock".into(),
             version: 1,
             required: true,
         });
@@ -161,12 +161,12 @@ mod tests {
         let mut local = hello();
         let mut remote = hello();
         local.extensions.push(Extension {
-            id: "nsp.clock".into(),
+            id: "peri.clock".into(),
             version: 1,
             required: true,
         });
         remote.extensions.push(Extension {
-            id: "nsp.clock".into(),
+            id: "peri.clock".into(),
             version: 2,
             required: false,
         });

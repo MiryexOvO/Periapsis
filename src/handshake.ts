@@ -4,10 +4,10 @@ export type State = "TRANSPORT_PENDING" | "MOQ_READY" | "AWAITING_OFFER" | "AWAI
   "AWAITING_ACK" | "ACK_PENDING" | "ACTIVE" | "REJECTED" | "CLOSED";
 export type Role = "initiator" | "responder";
 export type Control =
-  { type: "nsp.offer"; sessionId: string; hello: Hello } |
-  { type: "nsp.accept"; sessionId: string; hello: Hello; agreement: unknown } |
-  { type: "nsp.ack"; sessionId: string } |
-  { type: "nsp.reject"; sessionId: string };
+  { type: "peri.offer"; sessionId: string; hello: Hello } |
+  { type: "peri.accept"; sessionId: string; hello: Hello; agreement: unknown } |
+  { type: "peri.ack"; sessionId: string } |
+  { type: "peri.reject"; sessionId: string };
 
 const validId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -29,13 +29,13 @@ export function decodeControl(bytes: Uint8Array): Control {
   const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   if (!object(value) || !validId(value.sessionId)) throw new Error("invalid control envelope");
   const sessionId = value.sessionId;
-  if (value.type === "nsp.offer" || value.type === "nsp.accept") {
+  if (value.type === "peri.offer" || value.type === "peri.accept") {
     const hello = parseHello(new TextEncoder().encode(JSON.stringify(value.hello)));
-    if (value.type === "nsp.offer") return { type: value.type, sessionId, hello };
+    if (value.type === "peri.offer") return { type: value.type, sessionId, hello };
     if (!object(value.agreement)) throw new Error("invalid agreement");
     return { type: value.type, sessionId, hello, agreement: value.agreement };
   }
-  if (value.type === "nsp.ack" || value.type === "nsp.reject") return { type: value.type, sessionId };
+  if (value.type === "peri.ack" || value.type === "peri.reject") return { type: value.type, sessionId };
   throw new Error("unsupported control message");
 }
 
@@ -75,26 +75,26 @@ export class Handshake {
     if (this.current !== "MOQ_READY") this.fail("unexpected start");
     if (this.role === "responder") { this.current = "AWAITING_OFFER"; return; }
     this.current = "AWAITING_ACCEPT";
-    return { type: "nsp.offer", sessionId: this.sessionId, hello: structuredClone(this.local) };
+    return { type: "peri.offer", sessionId: this.sessionId, hello: structuredClone(this.local) };
   }
   receive(message: Control): Control | undefined {
     if (!["AWAITING_OFFER", "AWAITING_ACCEPT", "AWAITING_ACK"].includes(this.current)) this.fail("unexpected control message");
     if (message.sessionId !== this.sessionId) this.fail("session mismatch");
     try {
-      if (message.type === "nsp.reject") this.fail("peer rejected negotiation");
-      if (this.current === "AWAITING_OFFER" && message.type === "nsp.offer") {
+      if (message.type === "peri.reject") this.fail("peer rejected negotiation");
+      if (this.current === "AWAITING_OFFER" && message.type === "peri.offer") {
         this.agreed = negotiate(this.local, message.hello);
         this.current = "AWAITING_ACK";
-        return { type: "nsp.accept", sessionId: this.sessionId, hello: structuredClone(this.local), agreement: structuredClone(this.agreed) };
+        return { type: "peri.accept", sessionId: this.sessionId, hello: structuredClone(this.local), agreement: structuredClone(this.agreed) };
       }
-      if (this.current === "AWAITING_ACCEPT" && message.type === "nsp.accept") {
+      if (this.current === "AWAITING_ACCEPT" && message.type === "peri.accept") {
         // 响应端按自己的偏好选择；发起端重新计算，拒绝放宽限制或伪造能力。
         const expected = negotiate(message.hello, this.local);
         if (!agreementEquals(message.agreement, expected)) this.fail("agreement mismatch");
         this.agreed = expected; this.current = "ACK_PENDING";
-        return { type: "nsp.ack", sessionId: this.sessionId };
+        return { type: "peri.ack", sessionId: this.sessionId };
       }
-      if (this.current === "AWAITING_ACK" && message.type === "nsp.ack") { this.current = "ACTIVE"; return; }
+      if (this.current === "AWAITING_ACK" && message.type === "peri.ack") { this.current = "ACTIVE"; return; }
       this.fail("unexpected control message");
     } catch (error) { return this.fail(error instanceof Error ? error.message : "negotiation failed"); }
   }

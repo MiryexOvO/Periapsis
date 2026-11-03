@@ -617,38 +617,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nsp-scheduler"
-version = "0.1.0"
-
-[[package]]
-name = "nsp-session"
-version = "0.1.0"
-dependencies = [
- "nsp-types",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "nsp-transport"
-version = "0.1.0"
-dependencies = [
- "moq-net",
- "rcgen",
- "rustls",
- "tokio",
- "web-transport-quinn",
- "web-transport-trait 0.5.2",
-]
-
-[[package]]
-name = "nsp-types"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -735,6 +703,38 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "peri-scheduler"
+version = "0.1.0"
+
+[[package]]
+name = "peri-session"
+version = "0.1.0"
+dependencies = [
+ "peri-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "peri-transport"
+version = "0.1.0"
+dependencies = [
+ "moq-net",
+ "rcgen",
+ "rustls",
+ "tokio",
+ "web-transport-quinn",
+ "web-transport-trait 0.5.2",
+]
+
+[[package]]
+name = "peri-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "pin-project-lite"

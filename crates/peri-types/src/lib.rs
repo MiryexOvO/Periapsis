@@ -1,10 +1,10 @@
-//! Shared NSP application types. No I/O and no MOQT wire redefinitions.
-//! NSP 共用的应用层类型，不执行 I/O，也不重新定义 MOQT 线格式。
+//! Shared PERI application types. No I/O and no MOQT wire redefinitions.
+//! PERI 共用的应用层类型，不执行 I/O，也不重新定义 MOQT 线格式。
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-pub const NSP_VERSION: u32 = 1;
+pub const PERI_VERSION: u32 = 1;
 pub const MAX_CONTROL_BYTES: usize = 16 * 1024;
 pub const MAX_CAPABILITIES: usize = 32;
 
@@ -90,8 +90,8 @@ pub enum NegotiationError {
 impl fmt::Display for NegotiationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidHello(reason) => write!(f, "invalid NSP hello: {reason}"),
-            Self::UnsupportedVersion(version) => write!(f, "unsupported NSP version: {version}"),
+            Self::InvalidHello(reason) => write!(f, "invalid PERI hello: {reason}"),
+            Self::UnsupportedVersion(version) => write!(f, "unsupported PERI version: {version}"),
             Self::NoCommonProfile => f.write_str("no common media profile"),
             Self::NoCommonCodec => f.write_str("no common codec"),
             Self::RequiredExtension { id, version } => {

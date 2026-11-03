@@ -2,15 +2,15 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { connect, publishTrack, subscribeTrack, MAX_OBJECT_BYTES } from "./transport.ts";
 
-const [command, file, path = "nsp/probe"] = process.argv.slice(2);
+const [command, file, path = "peri/probe"] = process.argv.slice(2);
 if (!file || !["publish", "subscribe"].includes(command ?? "")) {
   console.error("Usage: npm run object -- publish|subscribe FILE [BROADCAST_PATH]");
   process.exit(1);
 }
 const publisher = command === "publish";
-const token = publisher ? process.env.NSP_PUBLISH_TOKEN : process.env.NSP_SUBSCRIBE_TOKEN;
-if (!token) throw new Error(`missing NSP_${publisher ? "PUBLISH" : "SUBSCRIBE"}_TOKEN`);
-const url = new URL(process.env.NSP_RELAY_URL ?? "ws://127.0.0.1:4443/moq");
+const token = publisher ? process.env.PERI_PUBLISH_TOKEN : process.env.PERI_SUBSCRIBE_TOKEN;
+if (!token) throw new Error(`missing PERI_${publisher ? "PUBLISH" : "SUBSCRIBE"}_TOKEN`);
+const url = new URL(process.env.PERI_RELAY_URL ?? "ws://127.0.0.1:4443/moq");
 url.searchParams.set("role", publisher ? "publish" : "subscribe");
 url.searchParams.set("token", token);
 const peer = await connect(url, publisher ? "publish" : "subscribe");
