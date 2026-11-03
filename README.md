@@ -124,4 +124,3 @@ pnpm run interop
 HTTPS 浏览器计划使用 MoQ/WebTransport + WebCodecs。普通远程 HTTP 浏览器计划使用
 媒体网关 + MSE。当前 WS 链路验证了 HTTP 兼容环境中的对象传输，**不等于完成 HTTP 视频播放**。
 WSS 可以由 TLS 网关终止，但当前参考服务仅允许本机 CLI，拒绝浏览器 Origin，尚不可公网部署。
-
