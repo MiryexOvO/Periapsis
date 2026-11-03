@@ -20,7 +20,8 @@
 详见 [media-01 实验媒体配置](docs/PERI-MEDIA-01.md)。
 原生发布接入和单资源 Relay 库已实现，提供 AV1 编码源经 Relay 到双接收端的保真示例。
 另提供分进程 Relay、AV1 文件发布与录制命令，使用证书校验及独立发布/订阅凭据。
-实时解码播放、播放时间轴映射、接收反馈和推流软件 SDK/插件尚待实现。
+原生 AV1 GOP 视频可持续解码播放，支持本地播放时间映射、截止时间恢复和有限重连；
+音频同步、接收反馈和推流软件 SDK/插件尚待实现。
 MPQUIC 定位为可选原生端多路径增强模块，当前尚未实现，单路径不依赖它运行。
 
 主线是原生 QUIC 发布、Relay 分发和浏览器 WebTransport 接收。
@@ -264,3 +265,13 @@ pnpm run interop
 普通远程 HTTP 页面无法直接获得同等安全上下文能力，兼容播放方案尚待评估。
 当前本机 HTTP 演示利用 localhost 安全上下文，不代表已实现远程普通 HTTP 视频播放。
 WSS 可以由 TLS 网关终止，但基础 Relay 默认拒绝浏览器 Origin；媒体演示仅允许其本机网页 Origin，尚不可公网部署。
+
+## 原生 GOP 视频播放
+
+带依赖帧的 AV1 文件可通过独立 PERI Relay 发布、原生解码观看与录制。
+证书和凭据配置见[原生服务说明](docs/PERI-SERVICE-01.md)，
+编码配置与观看命令见[播放说明](docs/PERI-PLAYBACK-01.md)。
+
+```powershell
+pnpm run native:gop:check
+```

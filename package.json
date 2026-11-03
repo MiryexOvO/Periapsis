@@ -30,6 +30,7 @@
     "video:check": "node --experimental-strip-types scripts/video-check.ts",
     "video:quic": "node --experimental-strip-types scripts/video.ts --quic",
     "ingest": "node --experimental-strip-types scripts/ingest.ts",
+    "native:gop:check": "node --experimental-strip-types scripts/native-gop-check.ts",
     "native:check": "node --experimental-strip-types scripts/native-service-check.ts",
     "ingest:check": "node --experimental-strip-types scripts/ingest-check.ts",
     "video:quic:check": "node --experimental-strip-types scripts/video-check.ts --quic"

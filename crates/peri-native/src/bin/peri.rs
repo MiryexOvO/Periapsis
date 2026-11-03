@@ -1,10 +1,13 @@
 //! Separate-process native PERI relay, file publisher and recorder.
 //! 可分进程运行的原生 PERI Relay、文件发布与录制命令。
 
+#[path = "peri/playback.rs"]
+mod playback;
+
 use peri_native::{
     ALPN,
     auth::Credentials,
-    av1::{IvfWriter, read_all_intra_ivf},
+    av1::{IvfWriter, read_all_intra_ivf, read_gop_ivf},
     media::{Publisher, Subscriber},
     quinn,
     relay::{Limits, Relay},
@@ -224,15 +227,25 @@ async fn relay(args: &[String]) -> Result<(), Error> {
 }
 
 async fn publish(args: &[String]) -> Result<(), Error> {
-    if !args[5..].iter().any(|arg| arg == "--all-intra")
+    if args[5..]
+        .iter()
+        .filter(|arg| *arg == "--all-intra" || *arg == "--gop")
+        .count()
+        != 1
         || args[5..]
             .iter()
-            .any(|arg| arg != "--all-intra" && arg != "--loop")
+            .any(|arg| arg != "--all-intra" && arg != "--gop" && arg != "--loop")
     {
-        return Err("publish requires --all-intra; optional --loop".into());
+        return Err("publish requires exactly one of --all-intra / --gop; optional --loop".into());
     }
     let looping = args[5..].iter().any(|arg| arg == "--loop");
-    let (catalog, frames) = read_all_intra_ivf(&read_bounded(&args[4], 16 * 1024 * 1024)?)?;
+    let bytes = read_bounded(&args[4], 16 * 1024 * 1024)?;
+    let (catalog, frames) = if args[5..].iter().any(|arg| arg == "--gop") {
+        let probe = playback::probe(&bytes).await?;
+        read_gop_ivf(&bytes, &probe)?
+    } else {
+        read_all_intra_ivf(&bytes)?
+    };
     let token = std::env::var("PERI_PUBLISH_TOKEN")?;
     let (_endpoint, connection) = connect(&args[0], &args[1], &args[2]).await?;
     let session =
@@ -253,6 +266,12 @@ async fn publish(args: &[String]) -> Result<(), Error> {
             for frame in &frames {
                 let mut frame = frame.clone();
                 sequence = sequence.checked_add(1).ok_or("sequence exhausted")?;
+                let offset = sequence - frame.sequence;
+                for dependency in &mut frame.dependencies {
+                    *dependency = dependency
+                        .checked_add(offset)
+                        .ok_or("dependency exhausted")?;
+                }
                 frame.sequence = sequence;
                 frame.timestamp_us = cycle
                     .checked_mul(duration)
@@ -327,9 +346,10 @@ async fn main() -> Result<(), Error> {
         Some("relay") if args.len() == 5 => relay(&args[1..]).await,
         Some("publish") if (7..=8).contains(&args.len()) => publish(&args[1..]).await,
         Some("receive") if args.len() == 7 => receive(&args[1..]).await,
+        Some("play") if (6..=8).contains(&args.len()) => playback::play(&args[1..]).await,
         Some("--help") | None => {
             println!(
-                "peri init DIR\nperi relay BIND CERT.der KEY.key RESOURCE\nperi publish ADDRESS SERVER_NAME TRUST.der RESOURCE INPUT.ivf --all-intra [--loop]\nperi receive ADDRESS SERVER_NAME TRUST.der RESOURCE OUTPUT.ivf COUNT\nCredentials: PERI_PUBLISH_TOKEN / PERI_SUBSCRIBE_TOKEN"
+                "peri init DIR\nperi relay BIND CERT.der KEY.key RESOURCE\nperi publish ADDRESS SERVER_NAME TRUST.der RESOURCE INPUT.ivf (--all-intra|--gop) [--loop]\nperi receive ADDRESS SERVER_NAME TRUST.der RESOURCE OUTPUT.ivf COUNT\nperi play ADDRESS SERVER_NAME TRUST.der RESOURCE COUNT [--headless] [--fifo]\nCredentials: PERI_PUBLISH_TOKEN / PERI_SUBSCRIBE_TOKEN"
             );
             Ok(())
         }
