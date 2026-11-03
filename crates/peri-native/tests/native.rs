@@ -1,9 +1,107 @@
-use peri_native::{ALPN, Error, Object, quinn};
+use peri_native::{ALPN, Error, Object};
 use peri_types::{Extension, Hello, PERI_VERSION, Profile};
 use std::{sync::Arc, time::Duration};
+#[path = "../examples/support/mod.rs"]
+mod support;
+use support::pair;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 const BUDGET: Duration = Duration::from_secs(3);
+#[tokio::test]
+async fn push_publish_relay_fans_out_and_late_join_waits_for_key() -> Result<(), TestError> {
+    use peri_native::{
+        media::{Catalog, Frame, FrameKind, Publisher, Subscriber, Track, TrackKind},
+        relay::{Limits, Relay},
+    };
+    let incoming = pair(ALPN).await?;
+    let (source, ingest) = tokio::try_join!(
+        peri_native::publish(incoming.outgoing.clone(), hello(), "live/push", BUDGET),
+        peri_native::accept_publish(incoming.incoming.clone(), hello(), "live/push", BUDGET),
+    )?;
+    let catalog = Catalog {
+        tracks: vec![Track {
+            id: 1,
+            kind: TrackKind::Video,
+            codec: "video/av1".into(),
+            init: vec![],
+            width: Some(320),
+            height: Some(180),
+            sample_rate: None,
+            channels: None,
+        }],
+    };
+    let (source, ingest) = tokio::try_join!(
+        Publisher::new(source, catalog.clone(), BUDGET),
+        Subscriber::new(ingest, BUDGET)
+    )?;
+    let relay = Arc::new(Relay::new(
+        catalog,
+        Limits {
+            residence: Duration::from_secs(1),
+            ..Limits::default()
+        },
+    )?);
+    let hub = relay.clone();
+    let ingest_task = tokio::spawn(async move { hub.ingest(ingest, BUDGET).await });
+    let first = pair(ALPN).await?;
+    let (server, viewer) = tokio::try_join!(
+        peri_native::accept(first.incoming.clone(), hello(), "live/push", BUDGET),
+        peri_native::subscribe(first.outgoing.clone(), hello(), "live/push", BUDGET)
+    )?;
+    let hub = relay.clone();
+    let first_task = tokio::spawn(async move { hub.serve(server, BUDGET).await });
+    let mut first_viewer = Subscriber::new(viewer, BUDGET).await?;
+    let frame = |sequence, kind, dependencies| Frame {
+        track: 1,
+        sequence,
+        timestamp_us: sequence * 33333,
+        duration_us: 33333,
+        kind,
+        dependencies,
+        payload: vec![sequence as u8; 100],
+    };
+    let key = frame(1, FrameKind::Key, vec![]);
+    source.send(&key, BUDGET).await?;
+    assert_eq!(first_viewer.recv(BUDGET).await?, key);
+    let second = pair(ALPN).await?;
+    let (server, viewer) = tokio::try_join!(
+        peri_native::accept(second.incoming.clone(), hello(), "live/push", BUDGET),
+        peri_native::subscribe(second.outgoing.clone(), hello(), "live/push", BUDGET)
+    )?;
+    let hub = relay.clone();
+    let second_task = tokio::spawn(async move { hub.serve(server, BUDGET).await });
+    let mut second_viewer = Subscriber::new(viewer, BUDGET).await?;
+    assert_eq!(relay.viewers(), 2);
+    let delta = frame(2, FrameKind::Reference, vec![1]);
+    source.send(&delta, BUDGET).await?;
+    assert_eq!(first_viewer.recv(BUDGET).await?, delta);
+    let recovery = frame(3, FrameKind::Key, vec![]);
+    source.send(&recovery, BUDGET).await?;
+    assert_eq!(first_viewer.recv(BUDGET).await?, recovery);
+    assert_eq!(second_viewer.recv(BUDGET).await?, recovery);
+    drop(source);
+    assert!(tokio::time::timeout(BUDGET, ingest_task).await??.is_err());
+    assert!(tokio::time::timeout(BUDGET, first_task).await??.is_err());
+    assert!(tokio::time::timeout(BUDGET, second_task).await??.is_err());
+    assert_eq!(relay.viewers(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn push_requests_cannot_enter_a_subscribe_only_endpoint() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (publisher, server) = tokio::join!(
+        peri_native::publish(pair.outgoing.clone(), hello(), "live/push", BUDGET),
+        peri_native::accept(pair.incoming.clone(), hello(), "live/push", BUDGET)
+    );
+    assert!(publisher.is_err());
+    assert!(matches!(
+        server,
+        Err(Error::Protocol("unexpected connection role"))
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn media_catalog_and_dependency_frames_cross_real_quic() -> Result<(), TestError> {
     use peri_native::media::{
@@ -227,55 +325,6 @@ fn hello() -> Hello {
         codecs: vec!["video/av1".into()],
         extensions: vec![],
     }
-}
-
-struct Pair {
-    client: quinn::Endpoint,
-    server: quinn::Endpoint,
-    outgoing: quinn::Connection,
-    incoming: quinn::Connection,
-}
-impl Drop for Pair {
-    fn drop(&mut self) {
-        self.client.close(0u32.into(), b"test finished");
-        self.server.close(0u32.into(), b"test finished");
-    }
-}
-async fn pair(alpn: &[u8]) -> Result<Pair, TestError> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
-    let der = cert.cert.der().clone();
-    let key = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
-    let mut tls = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![der.clone()], key.into())?;
-    tls.alpn_protocols = vec![alpn.to_vec()];
-    let server = quinn::Endpoint::server(
-        quinn::ServerConfig::with_crypto(Arc::new(
-            quinn::crypto::rustls::QuicServerConfig::try_from(tls)?,
-        )),
-        "127.0.0.1:0".parse()?,
-    )?;
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(der)?;
-    let mut tls = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    tls.alpn_protocols = vec![alpn.to_vec()];
-    let mut client = quinn::Endpoint::client("127.0.0.1:0".parse()?)?;
-    client.set_default_client_config(quinn::ClientConfig::new(Arc::new(
-        quinn::crypto::rustls::QuicClientConfig::try_from(tls)?,
-    )));
-    let (incoming, outgoing) = tokio::try_join!(
-        async { Ok::<_, TestError>(server.accept().await.ok_or("server closed")?.await?) },
-        async { Ok::<_, TestError>(client.connect(server.local_addr()?, "localhost")?.await?) },
-    )?;
-    Ok(Pair {
-        server,
-        client,
-        incoming,
-        outgoing,
-    })
 }
 
 #[tokio::test]

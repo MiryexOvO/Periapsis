@@ -2,6 +2,7 @@
 //! 实验原生 PERI 发布订阅：独立 ALPN、控制封装和对象流，不提供公网鉴权。
 
 pub mod media;
+pub mod relay;
 mod wire;
 use peri_types::{Agreement, Hello};
 pub use quinn;
@@ -45,6 +46,8 @@ fn transport(error: impl fmt::Display) -> Error {
 enum Control {
     #[serde(rename = "peri.subscribe")]
     Subscribe { resource: String, hello: Hello },
+    #[serde(rename = "peri.publish")]
+    Publish { resource: String, hello: Hello },
     #[serde(rename = "peri.accept")]
     Accept { hello: Hello, agreement: Agreement },
     #[serde(rename = "peri.ack")]
@@ -187,6 +190,27 @@ pub async fn subscribe(
     resource: &str,
     budget: Duration,
 ) -> Result<Session, Error> {
+    initiate(connection, hello, resource, budget, false).await
+}
+
+/// Push one resource to an explicitly authorized ingest endpoint.
+/// 向调用方明确授权的接入端主动发布一个资源。
+pub async fn publish(
+    connection: quinn::Connection,
+    hello: Hello,
+    resource: &str,
+    budget: Duration,
+) -> Result<Session, Error> {
+    initiate(connection, hello, resource, budget, true).await
+}
+
+async fn initiate(
+    connection: quinn::Connection,
+    hello: Hello,
+    resource: &str,
+    budget: Duration,
+    publishing: bool,
+) -> Result<Session, Error> {
     let guard = ConnectionGuard(connection);
     validate_local(&hello, resource, &guard.0)?;
     tokio::time::timeout(budget, async {
@@ -194,9 +218,16 @@ pub async fn subscribe(
         AsyncWriteExt::write_all(&mut send, wire::PREFACE).await?;
         wire::write_control(
             &mut send,
-            &Control::Subscribe {
-                resource: resource.into(),
-                hello: hello.clone(),
+            &if publishing {
+                Control::Publish {
+                    resource: resource.into(),
+                    hello: hello.clone(),
+                }
+            } else {
+                Control::Subscribe {
+                    resource: resource.into(),
+                    hello: hello.clone(),
+                }
             },
         )
         .await?;
@@ -215,7 +246,7 @@ pub async fn subscribe(
         Ok(Session {
             guard,
             agreement,
-            publisher: false,
+            publisher: publishing,
             send_slots: tokio::sync::Semaphore::new(8),
             _control: (send, recv),
         })
@@ -232,6 +263,27 @@ pub async fn accept(
     resource: &str,
     budget: Duration,
 ) -> Result<Session, Error> {
+    respond(connection, hello, resource, budget, false).await
+}
+
+/// Accept a push publisher on an exclusively owned authorized QUIC connection.
+/// 在独占且已授权的 QUIC 连接上接收主动发布，不能用于接收订阅请求。
+pub async fn accept_publish(
+    connection: quinn::Connection,
+    hello: Hello,
+    resource: &str,
+    budget: Duration,
+) -> Result<Session, Error> {
+    respond(connection, hello, resource, budget, true).await
+}
+
+async fn respond(
+    connection: quinn::Connection,
+    hello: Hello,
+    resource: &str,
+    budget: Duration,
+    publishing: bool,
+) -> Result<Session, Error> {
     let guard = ConnectionGuard(connection);
     validate_local(&hello, resource, &guard.0)?;
     tokio::time::timeout(budget, async {
@@ -241,12 +293,11 @@ pub async fn accept(
         if &preface != wire::PREFACE {
             return Err(Error::Protocol("invalid preface or wire version"));
         }
-        let Control::Subscribe {
-            resource: requested,
-            hello: remote,
-        } = wire::read_control(&mut recv).await?
-        else {
-            return Err(Error::Protocol("expected subscription"));
+        let message: Control = wire::read_control(&mut recv).await?;
+        let (requested, remote) = match (publishing, message) {
+            (true, Control::Publish { resource, hello })
+            | (false, Control::Subscribe { resource, hello }) => (resource, hello),
+            _ => return Err(Error::Protocol("unexpected connection role")),
         };
         if requested != resource {
             return Err(Error::Protocol("resource denied"));
@@ -266,7 +317,7 @@ pub async fn accept(
         Ok(Session {
             guard,
             agreement,
-            publisher: true,
+            publisher: !publishing,
             send_slots: tokio::sync::Semaphore::new(8),
             _control: (send, recv),
         })
