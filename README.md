@@ -107,6 +107,12 @@ cargo test --workspace
 cargo test -p peri-transport --test native_quic
 ```
 
+原生 QUIC 上的 PERI 双向协商与对象收发：
+
+```powershell
+cargo test -p peri-transport --test native_peer
+```
+
 该测试使用本机 UDP、TLS 证书校验和固定的 MOQT-22 ALPN，比较发送与接收的对象内容。
 它不包含 Relay 转发、音视频播放或独立 MoQ 实现之间的互通验证。
 
