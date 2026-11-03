@@ -99,7 +99,9 @@ try {
   // Actual UDP proxy: per-direction queues are bounded; packets exceed neither
   // 64 queued datagrams nor a 250ms scheduled delay. Only the viewer path is impaired.
   const proxyReports = [];
-  for (const mode of [[], ["--fifo"]]) {
+  const repeats = Number(process.env.PERI_NETWORK_REPEATS ?? "3");
+  if (!Number.isInteger(repeats) || repeats < 1 || repeats > 5) throw new Error("PERI_NETWORK_REPEATS must be 1..5");
+  for (let round = 1; round <= repeats; round++) for (const mode of round % 2 ? [[], ["--fifo"]] : [["--fifo"], []]) {
     const downstream = dgram.createSocket("udp4"), upstream = dgram.createSocket("udp4");
     await new Promise<void>(resolve => downstream.bind(0, "127.0.0.1", resolve));
     await new Promise<void>(resolve => upstream.bind(0, "127.0.0.1", resolve));
@@ -125,7 +127,8 @@ try {
       await waitFor(viewer, "PERI_FRAME", 10); started = performance.now();
       if (await finish(viewer, 30000) !== 0) throw new Error(`Impaired playback failed: ${viewer.state.output}`);
       const summary = JSON.parse(viewer.state.output.match(/PERI_PLAY_DONE (.+)/)![1]!);
-      proxyReports.push({ mode: mode.length ? "fifo" : "deadline", profile: { downstreamBytesPerSecond: 24000, delayMs: 45, durationMs: 2000, dropEvery: 97 }, packets, lost, peakQueuedDatagrams: peak, ...summary });
+      if (summary.decoded !== 60 || summary.reconnects !== 0 || lost === 0) throw new Error(`Live recovery regression: ${JSON.stringify(summary)}, dropped UDP packets: ${lost}`);
+      proxyReports.push({ round, mode: mode.length ? "fifo" : "deadline", profile: { downstreamBytesPerSecond: 24000, delayMs: 45, durationMs: 2000, dropEvery: 97 }, packets, lost, peakQueuedDatagrams: peak, ...summary });
     } finally { for (const timer of timers) clearTimeout(timer); downstream.close(); upstream.close(); }
   }
   await writeFile(resolve(directory, "network-report.json"), JSON.stringify(proxyReports, null, 2));

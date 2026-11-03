@@ -280,7 +280,23 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
             if progress.elapsed() > Duration::from_secs(10) {
                 return Err("decoder made no progress for 10 seconds".into());
             }
-            let frame = subscriber.recv(SETUP).await?;
+            let frame = match subscriber
+                .recv_live(SETUP, Duration::from_millis(150))
+                .await?
+            {
+                Some(frame) => frame,
+                None => {
+                    stats.dropped += 1;
+                    if !waiting_key {
+                        buffer.recover(track.id);
+                        waiting_key = true;
+                        stats.recoveries += 1;
+                        decoder.stop().await;
+                        decoder = Decoder::new(&track).await?;
+                    }
+                    continue;
+                }
+            };
             if frame.track != track.id {
                 continue;
             }

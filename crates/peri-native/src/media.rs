@@ -241,6 +241,15 @@ impl Publisher {
             .send(&frame.object(&self.catalog)?, budget)
             .await
     }
+    pub(crate) async fn start_send(
+        &self,
+        frame: &Frame,
+        budget: Duration,
+    ) -> Result<crate::ObjectSend, Error> {
+        self.session
+            .start_send(&frame.object(&self.catalog)?, budget)
+            .await
+    }
 }
 
 /// Subscriber that validates the initial catalog and every encoded media unit.
@@ -280,6 +289,18 @@ impl Subscriber {
     /// 接收已校验的媒体单元，解码及截止时间调度由调用方驱动。
     pub async fn recv(&mut self, budget: Duration) -> Result<Frame, Error> {
         Frame::from_object(self.session.recv(budget).await?, &self.catalog)
+    }
+    /// Receive live media, reporting local expiry or RESET(1) as a recovery gap.
+    pub async fn recv_live(
+        &mut self,
+        idle: Duration,
+        residence: Duration,
+    ) -> Result<Option<Frame>, Error> {
+        self.session
+            .recv_live(idle, residence)
+            .await?
+            .map(|object| Frame::from_object(object, &self.catalog))
+            .transpose()
     }
 }
 
