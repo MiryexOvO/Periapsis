@@ -5,7 +5,7 @@
 
 目前提供 MOQT-22 对象发布/订阅、本地 Relay 和 offer/accept/ack 双向会话协商，
 以及 Rust 原生 QUIC 直连适配。本地浏览器演示支持 VP8 测试视频播放，暂不包含音频。
-浏览器参考传输使用 QMux/WebSocket。
+浏览器支持 WebTransport，以及 QMux/WebSocket 兼容模式。
 
 ## 快速运行
 
@@ -24,9 +24,20 @@ VP8 测试图，使用 LOC 和 MSF catalog 封装；“恢复画面”会等待�
 
 可通过 `PERI_VIDEO_PORT` 指定端口，通过 `PERI_FFMPEG` 指定 FFmpeg 可执行文件路径。
 服务仅绑定本机，使用 localhost 安全上下文和 MoQ/WebSocket 兼容传输。
-普通局域网 HTTP 地址、HTTPS/WebTransport 视频接入、音频和实时采集尚未包含。
+普通局域网 HTTP 地址、音频和实时采集尚未包含。
+
+本地 WebTransport/QUIC 视频模式还需要 Rust 工具链：
+
+```powershell
+pnpm run video:quic
+```
+
+打开相同的本地播放器。该模式启动 Rust HTTP/3 WebTransport 网关，浏览器媒体通过
+QUIC 接收；使用短期证书和指纹校验，不需要手动安装证书。当前仍仅限本机，
+公网 HTTPS 网页及域名证书部署尚未包含。默认 `pnpm run video` 保留 WebSocket 兼容模式。
 
 安装 Chrome 后可运行 `pnpm run video:check` 检查播放、中途加入和关键帧恢复。
+`pnpm run video:quic:check` 会检查 WebTransport 模式及错误证书、错误令牌的拒绝行为。
 
 ### 对象传输与会话协商
 

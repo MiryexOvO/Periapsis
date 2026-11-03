@@ -45,7 +45,10 @@ async fn main() -> Result<(), Error> {
     params.not_before = time::OffsetDateTime::now_utc() - time::Duration::minutes(1);
     params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(7);
     let cert = params.self_signed(&key)?;
-    let hash: String = Sha256::digest(cert.der().as_ref()).iter().map(|byte| format!("{byte:02x}")).collect();
+    let hash: String = Sha256::digest(cert.der().as_ref())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     let mut server = web_transport_quinn::ServerBuilder::new()
         .with_addr("127.0.0.1:0".parse()?)
         .with_certificate(
@@ -80,7 +83,7 @@ async fn main() -> Result<(), Error> {
                 return Err::<(), Error>("video object too large".into());
             }
             if message.keyframe {
-                if let Some(mut previous) = group.take() {
+                if let Some(previous) = group.take() {
                     previous.finish()?;
                 }
                 group = Some(track.append_group()?);

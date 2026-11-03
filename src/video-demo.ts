@@ -61,8 +61,10 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
   let index = 0, cycle = 0, stopped = false;
   let gateway: ReturnType<typeof spawn> | undefined;
   if (transport === "webtransport") {
+    try {
     gateway = spawn(resolve(process.env.CARGO_TARGET_DIR ?? resolve(root, "target"), "debug/examples", process.platform === "win32" ? "webtransport_video.exe" : "webtransport_video"), [], { cwd: root, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
     const child = gateway;
+    child.stdin!.on("error", () => {});
     const lines = createInterface({ input: child.stdout! });
     const ready = await new Promise<{ url: string; hash: string }>((resolve, reject) => {
       const timer = setTimeout(() => { child.kill(); reject(new Error("WebTransport gateway startup timed out")); }, 10000);
@@ -86,6 +88,11 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
         } } finally { group.close(); }
       }
     })().catch(error => { if (!stopped) console.error("WebTransport media input failed:", error.message); }).finally(() => subscription.close());
+    } catch (error) {
+      gateway?.kill(); publisher.close(); await relay.close();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      throw error;
+    }
   }
   const started = performance.now();
   let timer: ReturnType<typeof setTimeout>;
