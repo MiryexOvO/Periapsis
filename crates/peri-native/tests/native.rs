@@ -10,9 +10,16 @@ async fn media_catalog_and_dependency_frames_cross_real_quic() -> Result<(), Tes
         Catalog, DecodeBuffer, Event, Frame, FrameKind, Publisher, Subscriber, Track, TrackKind,
     };
     let pair = pair(ALPN).await?;
+    let mut capabilities = hello();
+    capabilities.codecs.push("audio/opus".into());
     let (publisher, subscriber) = tokio::try_join!(
-        peri_native::accept(pair.incoming.clone(), hello(), "live/media", BUDGET),
-        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/media", BUDGET),
+        peri_native::accept(
+            pair.incoming.clone(),
+            capabilities.clone(),
+            "live/media",
+            BUDGET
+        ),
+        peri_native::subscribe(pair.outgoing.clone(), capabilities, "live/media", BUDGET),
     )?;
     let agreement = subscriber.agreement().unwrap().clone();
     let catalog = Catalog {
@@ -27,6 +34,17 @@ async fn media_catalog_and_dependency_frames_cross_real_quic() -> Result<(), Tes
             channels: None,
         }],
     };
+    let mut catalog = catalog;
+    catalog.tracks.push(Track {
+        id: 2,
+        kind: TrackKind::Audio,
+        codec: "audio/opus".into(),
+        init: vec![],
+        width: None,
+        height: None,
+        sample_rate: Some(48000),
+        channels: Some(2),
+    });
     let (publisher, mut subscriber) = tokio::try_join!(
         Publisher::new(publisher, catalog.clone(), BUDGET),
         Subscriber::new(subscriber, BUDGET)
@@ -63,6 +81,26 @@ async fn media_catalog_and_dependency_frames_cross_real_quic() -> Result<(), Tes
     assert!(matches!(
         buffer.next(now),
         Some(Event::Decode(Frame { sequence: 2, .. }))
+    ));
+    let audio = Frame {
+        track: 2,
+        sequence: 3,
+        timestamp_us: 0,
+        duration_us: 20000,
+        kind: FrameKind::Audio,
+        dependencies: vec![],
+        payload: vec![42; 100],
+    };
+    let (_, received) = tokio::try_join!(publisher.send(&audio, BUDGET), subscriber.recv(BUDGET))?;
+    assert_eq!(received, audio);
+    buffer.push(received, now, now + Duration::from_millis(200))?;
+    assert!(matches!(
+        buffer.next(now),
+        Some(Event::Decode(Frame {
+            track: 2,
+            kind: FrameKind::Audio,
+            ..
+        }))
     ));
     Ok(())
 }
