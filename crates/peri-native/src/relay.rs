@@ -222,6 +222,7 @@ impl Relay {
             let mut forwarded = VecDeque::<(u64, u16)>::new();
             let mut sends = tokio::task::JoinSet::new();
             let mut recovery_points = HashMap::<u16, u64>::new();
+            let mut decoded_points = HashMap::<u16, u64>::new();
             loop {
                 if let Some(request) = publisher.poll_recovery()? {
                     let mut requests = self.requests.lock().expect("requests");
@@ -230,19 +231,23 @@ impl Relay {
                     }
                 }
                 if let Some(mut report) = publisher.poll_report()? {
+                    decoded_points
+                        .entry(report.track)
+                        .and_modify(|seq| *seq = (*seq).max(report.sequence))
+                        .or_insert(report.sequence);
                     report.viewer = id;
                     *self.report.lock().expect("report") = Some(report);
                 }
                 let item = tokio::select! {
                     biased;
                     completed = sends.join_next(), if !sends.is_empty() => {
-                        let (track, sequence, result) = completed.expect("pending send").map_err(crate::transport)?;
+                        let (track, sequence, kind, result) = completed.expect("pending send").map_err(crate::transport)?;
                         match result {
                             Ok(()) => {},
-                            Err(Error::Timeout | Error::ObjectAborted) => {
-                                crate::trace("relay_send_failed", serde_json::json!({"viewer":id,"track":track,"sequence":sequence}));
+                            Err(error @ (Error::Timeout | Error::ObjectAborted)) => {
+                                crate::trace("relay_send_failed", serde_json::json!({"viewer":id,"track":track,"sequence":sequence,"reason":if matches!(error, Error::Timeout) {"ack_deadline"} else {"peer_cancelled"}}));
                                 // A late failure from an older GOP must not invalidate a newer keyframe.
-                                if recovery_points.get(&track).is_none_or(|key| *key <= sequence) {
+                                if failure_requires_recovery(kind, sequence, recovery_points.get(&track).copied(), decoded_points.get(&track).copied()) {
                                     forwarded.retain(|(_, id)| *id != track);
                                     self.request_recovery(track);
                                 }
@@ -251,7 +256,9 @@ impl Relay {
                         }
                         continue;
                     }
-                    item = receiver.recv() => item,
+                    // 四个发送槽都在等待确认时，先让有界队列保留新帧。
+                    // 不因瞬时槽满立即丢掉参考帧；出队后仍按原始接收时间检查截止。
+                    item = receiver.recv(), if sends.len() < 4 => item,
                 };
                 let item = item.ok_or(Error::Protocol("relay closed"))?;
                 let frame = &item.frame;
@@ -282,7 +289,8 @@ impl Relay {
                     Ok(send) => {
                         let track = frame.track;
                         let sequence = frame.sequence;
-                        sends.spawn(async move { (track, sequence, send.finish().await) });
+                        let kind = frame.kind;
+                        sends.spawn(async move { (track, sequence, kind, send.finish().await) });
                         if matches!(frame.kind, FrameKind::Key | FrameKind::Audio) {
                             recovery_points.insert(track, sequence);
                         }
@@ -343,10 +351,69 @@ impl Relay {
     }
 }
 
+// Transport completion can arrive after successful decoding or a newer GOP.
+// Disposable objects never invalidate references, even when their ACK times out.
+// 迟到的传输失败不能推翻已报告的解码进度或新GOP；可丢弃帧失败不破坏参考链。
+fn failure_requires_recovery(
+    kind: FrameKind,
+    sequence: u64,
+    key: Option<u64>,
+    decoded: Option<u64>,
+) -> bool {
+    kind != FrameKind::Disposable
+        && key.is_none_or(|key| key <= sequence)
+        && decoded.is_none_or(|decoded| decoded < sequence)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::media::{Track, TrackKind};
+    #[test]
+    fn late_ack_failure_cannot_invalidate_disposable_decoded_or_newer_gop() {
+        assert!(!failure_requires_recovery(
+            FrameKind::Disposable,
+            20,
+            Some(10),
+            None
+        ));
+        assert!(!failure_requires_recovery(
+            FrameKind::Reference,
+            20,
+            Some(10),
+            Some(20)
+        ));
+        assert!(!failure_requires_recovery(
+            FrameKind::Reference,
+            20,
+            Some(10),
+            Some(25)
+        ));
+        assert!(!failure_requires_recovery(
+            FrameKind::Reference,
+            20,
+            Some(21),
+            None
+        ));
+        assert!(failure_requires_recovery(
+            FrameKind::Reference,
+            20,
+            Some(10),
+            Some(19)
+        ));
+        assert!(failure_requires_recovery(
+            FrameKind::Key,
+            20,
+            Some(20),
+            None
+        ));
+        assert!(failure_requires_recovery(
+            FrameKind::Reference,
+            20,
+            None,
+            None
+        ));
+    }
     fn catalog() -> Catalog {
         Catalog {
             tracks: vec![Track {

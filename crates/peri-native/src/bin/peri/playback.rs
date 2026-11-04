@@ -160,6 +160,8 @@ struct Stats {
     last: Option<Instant>,
     max_gap: u128,
     freeze_ms: u128,
+    freeze_count: u32,
+    first_output: Option<Instant>,
     played_sequence: u64,
     media_us: u64,
     max_lag: u128,
@@ -227,9 +229,18 @@ pub async fn play(args: &[String]) -> Result<(), Error> {
                 .copied()
                 .unwrap_or(0)
         };
+        // 连续性按首末实际输出的单调时间统计，包含期间的停顿和重连。
+        let playback_ms = stats
+            .first_output
+            .zip(stats.last)
+            .map(|(first, last)| last.duration_since(first).as_millis())
+            .unwrap_or(0);
         println!(
             "PERI_PLAY_DONE {}",
             serde_json::json!({
+                "playback_ms":playback_ms,"freeze_count":stats.freeze_count,
+                "freeze_ratio":if playback_ms>0 {stats.freeze_ms as f64/playback_ms as f64} else {0.0},
+                "output_fps":if playback_ms>0 {f64::from(stats.decoded.saturating_sub(1))*1000.0/playback_ms as f64} else {0.0},
                 "first_frame_ms": stats.first_frame_ms, "decoded": stats.decoded, "dropped": stats.dropped, "recoveries": stats.recoveries,
                 "reconnects": stats.reconnects, "max_gap_ms": stats.max_gap,
                 "max_lateness_ms": stats.max_lag, "freeze_ms":stats.freeze_ms, "p50_lateness_ms": percentile(50), "p95_lateness_ms": percentile(95)
@@ -253,6 +264,16 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
     let session =
         peri_native::subscribe_authenticated(connection, hello(), &args[3], &token, SETUP).await?;
     let agreement = session.agreement().ok_or("session closed")?.clone();
+    let recovery_read_ms: u64 = std::env::var("PERI_RECOVERY_READ_MS")
+        .unwrap_or_else(|_| "300".into())
+        .parse()?;
+    if !matches!(recovery_read_ms, 150 | 300) {
+        return Err("PERI_RECOVERY_READ_MS must be 150 or 300".into());
+    }
+    // 恢复读取窗口受协商上限约束；正常播放仍使用150毫秒预算。
+    let recovery_residence =
+        Duration::from_millis(recovery_read_ms.min(u64::from(agreement.buffer.maximum_ms)));
+
     let mut subscriber = Subscriber::new(session, SETUP).await?;
     let track = subscriber
         .catalog()
@@ -313,10 +334,15 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
             if progress.elapsed() > Duration::from_secs(10) {
                 return Err("decoder made no progress for 10 seconds".into());
             }
-            let frame = match subscriber
-                .recv_live(SETUP, Duration::from_millis(150))
-                .await?
-            {
+            // 参考链失效后跳过旧依赖负载，避免旧对象反复占满读取预算。
+            let received = if waiting_key {
+                subscriber.recv_recovery(SETUP, recovery_residence).await?
+            } else {
+                subscriber
+                    .recv_live(SETUP, Duration::from_millis(150))
+                    .await?
+            };
+            let frame = match received {
                 Some(frame) => frame,
                 None => {
                     stats.dropped += 1;
@@ -448,9 +474,12 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                                     .ok_or("display stdin")?
                                     .write_all(&decoder.pixels),
                             )
-                            .await??;
+                            .await
+                            // 显示管道超时与协议接收超时分开标识，保留故障而不放宽期限。
+                            .map_err(|_| "display pipe write exceeded 2 seconds")??;
                         }
                         let shown = Instant::now();
+                        stats.first_output.get_or_insert(shown);
                         if stats.first_frame_ms.is_none() {
                             stats.first_frame_ms = stats
                                 .started
@@ -462,6 +491,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                         if let Some(last) = stats.last {
                             let gap = shown.duration_since(last).as_millis();
                             if gap > 250 {
+                                stats.freeze_count += 1;
                                 stats.freeze_ms += gap.saturating_sub(67);
                             }
                             stats.max_gap =

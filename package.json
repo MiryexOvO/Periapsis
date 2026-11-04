@@ -33,7 +33,9 @@
     "native:gop:check": "node --experimental-strip-types scripts/native-gop-check.ts",
     "native:check": "node --experimental-strip-types scripts/native-service-check.ts",
     "ingest:check": "node --experimental-strip-types scripts/ingest-check.ts",
-    "video:quic:check": "node --experimental-strip-types scripts/video-check.ts --quic"
+    "video:quic:check": "node --experimental-strip-types scripts/video-check.ts --quic",
+    "native:recovery:check": "node --experimental-strip-types scripts/native-recovery-check.ts",
+    "native:matrix:check": "node --experimental-strip-types scripts/native-matrix-check.ts"
   },
   "name": "periapsis",
   "engines": {

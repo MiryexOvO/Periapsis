@@ -336,6 +336,7 @@ impl Subscriber {
         Frame::from_object(self.session.recv(budget).await?, &self.catalog)
     }
     /// Receive live media, reporting local expiry or RESET(1) as a recovery gap.
+    /// 实时收取媒体；局部超时或RESET(1)返回缺口，由调用方决定是否恢复参考链。
     pub async fn recv_live(
         &mut self,
         idle: Duration,
@@ -343,6 +344,21 @@ impl Subscriber {
     ) -> Result<Option<Frame>, Error> {
         self.session
             .recv_live(idle, residence)
+            .await?
+            .map(|object| Frame::from_object(object, &self.catalog))
+            .transpose()
+    }
+    /// While recovering all dependent tracks, skip dependent payloads at the header.
+    /// None includes deliberate skips. For mixed active/recovering tracks use recv_live.
+    /// 所有依赖轨道都在恢复时可跳过旧依赖负载；None包含主动跳过。
+    /// 多轨道中仍有正常播放轨道时使用recv_live，避免误丢其他轨道的依赖帧。
+    pub async fn recv_recovery(
+        &mut self,
+        idle: Duration,
+        residence: Duration,
+    ) -> Result<Option<Frame>, Error> {
+        self.session
+            .recv_recovery(idle, residence)
             .await?
             .map(|object| Frame::from_object(object, &self.catalog))
             .transpose()
