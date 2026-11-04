@@ -190,6 +190,32 @@ async fn push_publish_relay_fans_out_and_late_join_waits_for_key() -> Result<(),
         }
     }
     assert!(requested, "viewer request must reach source through relay");
+    first_viewer
+        .send_report(peri_native::ReceiverReport {
+            track: 1,
+            viewer: 999,
+            sample: 1,
+            sequence: 6,
+            media_us: 200000,
+            buffered_ms: 0,
+            queued_bytes: 0,
+            lateness_ms: 100,
+            dropped: 1,
+            recoveries: 1,
+        })
+        .await?;
+    for sequence in 21..=24 {
+        let unit = frame(sequence, FrameKind::Key, vec![]);
+        source.send(&unit, BUDGET).await?;
+        assert_eq!(first_viewer.recv(BUDGET).await?, unit);
+        assert_eq!(second_viewer.recv(BUDGET).await?, unit);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        source.poll_report()?.is_none(),
+        "multi-viewer telemetry must not become a global single-viewer target"
+    );
+
     drop(source);
     assert!(tokio::time::timeout(BUDGET, ingest_task).await??.is_err());
     assert!(tokio::time::timeout(BUDGET, first_task).await??.is_err());
@@ -697,5 +723,43 @@ async fn keyframe_feedback_is_role_checked_and_coalesced() -> Result<(), TestErr
     .await?;
     assert_eq!(received, 1);
     assert_eq!(publisher.poll_keyframe_request(), None);
+    Ok(())
+}
+#[tokio::test]
+async fn receiver_reports_enforce_role_bounds_and_reach_sender() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (publisher, subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+    )?;
+    let mut report = peri_native::ReceiverReport {
+        track: 1,
+        viewer: 0,
+        sample: 1,
+        sequence: 8,
+        media_us: 466666,
+        buffered_ms: 20,
+        queued_bytes: 1024,
+        lateness_ms: 15,
+        dropped: 0,
+        recoveries: 0,
+    };
+    assert!(publisher.send_report(report).await.is_err());
+    report.lateness_ms = 60001;
+    assert!(subscriber.send_report(report).await.is_err());
+    report.lateness_ms = 15;
+    subscriber.send_report(report).await?;
+    let received = tokio::time::timeout(BUDGET, async {
+        loop {
+            if let Some(report) = publisher.poll_report() {
+                break report;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(received.sequence, 8);
+    assert_eq!(received.queued_bytes, 1024);
+    assert!(received.valid());
     Ok(())
 }

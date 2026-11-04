@@ -1,9 +1,11 @@
 //! Experimental PERI native subscriber/publisher over QUIC.
 //! 实验原生 PERI 发布订阅：独立 ALPN、控制封装和对象流，不提供公网鉴权。
 
+pub mod adaptation;
 pub mod auth;
 pub mod av1;
 mod feedback;
+pub use feedback::{ReceiverReport, RecoveryRequest, trace};
 pub mod media;
 pub mod relay;
 mod wire;
@@ -68,7 +70,9 @@ enum Control {
     #[serde(rename = "peri.ack")]
     Ack,
     #[serde(rename = "peri.keyframe")]
-    Keyframe { track: u16 },
+    Keyframe { track: u16, origin: u32, id: u64 },
+    #[serde(rename = "peri.receiver_report")]
+    ReceiverReport { report: ReceiverReport },
 }
 
 /// One encoded media unit; timestamps share the publisher's media timeline.
@@ -141,12 +145,30 @@ impl Session {
         if self.publisher {
             return Err(Error::Protocol("publisher cannot request keyframe"));
         }
-        self.feedback.request(track).await
+        self.feedback.request(RecoveryRequest::new(track)).await
     }
     pub fn poll_keyframe_request(&self) -> Option<u16> {
-        self.feedback.poll()
+        self.feedback.poll().map(|request| request.track)
     }
 
+    pub fn poll_recovery(&self) -> Option<RecoveryRequest> {
+        self.feedback.poll()
+    }
+    pub fn poll_report(&self) -> Option<ReceiverReport> {
+        self.feedback.report()
+    }
+    pub async fn forward_recovery(&self, request: RecoveryRequest) -> Result<(), Error> {
+        if self.publisher {
+            return Err(Error::Protocol("invalid feedback role"));
+        }
+        self.feedback.request(request).await
+    }
+    pub async fn send_report(&self, report: ReceiverReport) -> Result<(), Error> {
+        if self.publisher {
+            return Err(Error::Protocol("invalid feedback role"));
+        }
+        self.feedback.send_report(report).await
+    }
     /// Indicate whether this endpoint may send media on the session.
     /// 表明本端是否具有该会话的媒体发送角色。
     pub fn can_send(&self) -> bool {

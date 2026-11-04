@@ -250,6 +250,24 @@ impl Publisher {
         }
         Ok(track)
     }
+    pub fn poll_recovery(&self) -> Result<Option<crate::RecoveryRequest>, Error> {
+        let request = self.session.poll_recovery();
+        if let Some(request) = request
+            && self.catalog.track(request.track)?.kind != TrackKind::Video
+        {
+            return Err(Error::Protocol("keyframe requested for audio"));
+        }
+        Ok(request)
+    }
+    pub fn poll_report(&self) -> Result<Option<crate::ReceiverReport>, Error> {
+        let report = self.session.poll_report();
+        if let Some(report) = report
+            && self.catalog.track(report.track)?.kind != TrackKind::Video
+        {
+            return Err(Error::Protocol("report requires video"));
+        }
+        Ok(report)
+    }
     pub(crate) async fn start_send(
         &self,
         frame: &Frame,
@@ -299,6 +317,18 @@ impl Subscriber {
             return Err(Error::Protocol("keyframe requested for audio"));
         }
         self.session.request_keyframe(track).await
+    }
+    pub async fn forward_recovery(&self, request: crate::RecoveryRequest) -> Result<(), Error> {
+        if self.catalog.track(request.track)?.kind != TrackKind::Video {
+            return Err(Error::Protocol("recovery requires video"));
+        }
+        self.session.forward_recovery(request).await
+    }
+    pub async fn send_report(&self, report: crate::ReceiverReport) -> Result<(), Error> {
+        if self.catalog.track(report.track)?.kind != TrackKind::Video {
+            return Err(Error::Protocol("report requires video"));
+        }
+        self.session.send_report(report).await
     }
     /// Receive a validated frame; decoding and deadline scheduling are separate.
     /// 接收已校验的媒体单元，解码及截止时间调度由调用方驱动。
@@ -520,6 +550,22 @@ impl DecodeBuffer {
             .iter()
             .map(|entry| entry.frame.payload.len())
             .sum();
+    }
+    pub fn buffered_ms(&self) -> u32 {
+        let first = self.pending.iter().map(|e| e.frame.timestamp_us).min();
+        let last = self
+            .pending
+            .iter()
+            .map(|e| {
+                e.frame
+                    .timestamp_us
+                    .saturating_add(u64::from(e.frame.duration_us))
+            })
+            .max();
+        match (first, last) {
+            (Some(a), Some(b)) => ((b - a) / 1000).min(10000) as u32,
+            _ => 0,
+        }
     }
     /// Count queued encoded payload bytes, excluding decoder-owned frames.
     /// 统计排队编码负载字节，不含已交给解码器的帧。

@@ -46,18 +46,46 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
         let publisher = Publisher::new(session, catalog, SETUP).await?;
         println!("PERI_PUBLISH_READY");
         let started = tokio::time::Instant::now();
+        let adaptive = match std::env::var("PERI_ADAPTIVE").as_deref() {
+            Ok("1") => true,
+            Ok("0") | Err(_) => false,
+            _ => return Err("PERI_ADAPTIVE must be 0 or 1".into()),
+        };
+        let mut controller =
+            peri_native::adaptation::RateController::new(std::time::Instant::now());
+        let mut desired_rate = 300000u32;
+        let mut applied_rate = 300000u32;
+        let mut request: Option<peri_native::RecoveryRequest> = None;
+        let mut request_at = std::time::Instant::now();
         let mut pending = false;
         let mut last_forced: Option<u64> = None;
         for index in 0..count {
             tokio::time::sleep_until(started + Duration::from_micros(index * 1_000_000 / 15)).await;
-            while publisher.poll_keyframe_request()?.is_some() {
+            while let Some(received) = publisher.poll_recovery()? {
+                peri_native::trace("source_request", received);
+                request = Some(received);
+                request_at = std::time::Instant::now();
+                pending = true;
+            }
+            if let Some(report) = publisher.poll_report()? {
+                peri_native::trace("source_report", report);
+                if adaptive && let Some(rate) = controller.update(report, std::time::Instant::now())
+                {
+                    desired_rate = rate;
+                }
+            }
+            if desired_rate != applied_rate {
                 pending = true;
             }
             // Coalesce requests: at most one forced recovery frame per second.
             let force = pending && last_forced.is_none_or(|last| index - last >= 15);
+            let encoding_started = std::time::Instant::now();
             let exchange = async {
                 input.write_u64(index).await?;
                 input.write_u8(u8::from(force)).await?;
+                input
+                    .write_u32(if force { desired_rate } else { applied_rate })
+                    .await?;
                 input.flush().await?;
                 let size = output.read_u32().await? as usize;
                 let pts = output.read_u64().await?;
@@ -76,10 +104,22 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
             };
             let (key, payload) = tokio::time::timeout(Duration::from_secs(2), exchange).await??;
             if force {
+                applied_rate = desired_rate;
+                peri_native::trace(
+                    "encoder_response",
+                    serde_json::json!({"request":request,"sequence":index+1,"target_bps":applied_rate,"request_wait_ms":request.map(|_|request_at.elapsed().as_millis()),"encoding_ms":encoding_started.elapsed().as_millis()}),
+                );
+                request = None;
                 pending = false;
                 last_forced = Some(index);
                 println!("PERI_KEYFRAME_RESPONSE {} {}", index + 1, payload.len());
             }
+            println!(
+                "PERI_ENCODED {} {} {}",
+                index + 1,
+                payload.len(),
+                applied_rate
+            );
             let frame = Frame {
                 track: 1,
                 sequence: index + 1,
