@@ -10,6 +10,9 @@ def make_codec(rate):
     context.time_base,context.framerate=Fraction(1,15),Fraction(15,1)
     context.bit_rate,context.gop_size,context.thread_count=rate,60,1
     context.options={'usage':'realtime','cpu-used':'8','lag-in-frames':'0','auto-alt-ref':'0'}
+    intra_pct = int(os.environ.get('PERI_MAX_INTRA_PCT', '0'))
+    if intra_pct not in (0, 100, 200): raise RuntimeError('PERI_MAX_INTRA_PCT must be 0, 100 or 200')
+    if intra_pct: context.options['aom-params'] = f'max-intra-rate={intra_pct}'
     context.open()
     return context
 pool={rate:make_codec(rate) for rate in (100000,150000,225000,300000)} if os.environ.get('PERI_ENCODER_POOL')=='1' else None

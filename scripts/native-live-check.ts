@@ -1,4 +1,5 @@
 import dgram from "node:dgram";
+import { reserveDatagram } from "./network-queue.ts";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, access, writeFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -9,7 +10,7 @@ await mkdir(resolve(root, "dist"), { recursive: true });
 const directory = await mkdtemp(resolve(root, "dist/live-check-"));
 const binary = resolve(process.env.CARGO_TARGET_DIR ?? resolve(root, "target"), "debug", process.platform === "win32" ? "peri.exe" : "peri");
 const publishToken = randomBytes(24).toString("hex"), subscribeToken = randomBytes(24).toString("hex");
-const environment = { ...process.env, PERI_PUBLISH_TOKEN: publishToken, PERI_SUBSCRIBE_TOKEN: subscribeToken };
+const environment: NodeJS.ProcessEnv = { ...process.env, PERI_PUBLISH_TOKEN: publishToken, PERI_SUBSCRIBE_TOKEN: subscribeToken };
 const children: ReturnType<typeof start>[] = [];
 function start(command: string, args: string[], env: NodeJS.ProcessEnv = environment) {
   const child = spawn(command, args, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -77,14 +78,19 @@ try {
     await run(process.env.PERI_PYTHON ?? "python",[resolve(root,"scripts/live-av1-worker.py"),"--check",path],{...environment,PERI_TEST_BITRATE:String(target)});
     const psnr=await run(ffmpeg,["-hide_banner","-loglevel","info","-i",path,"-f","rawvideo","-pixel_format","yuv420p","-video_size","320x180","-framerate","15","-i",path+".yuv","-lavfi","psnr","-f","null","-"],environment,true,60000);
     const value=psnr.match(/average:([\d.]+|inf)/)?.[1]; if(!value) throw new Error("missing quality measurement");
-    quality.push({target,psnr:value,encodedBytes:(await stat(path)).size});
+    quality.push({target,maxIntraPct:Number(environment.PERI_MAX_INTRA_PCT ?? 0),psnr:value,encodedBytes:(await stat(path)).size});
   }
   await writeFile(resolve(directory,"quality-report.json"),JSON.stringify(quality,null,2));
   console.log(JSON.stringify({quality}));
+  const startupReports = [];
   for (const mode of [[], ["--fifo"]]) {
     const output = await run(binary, ["play", address, "localhost", cert, resource, "30", "--headless", ...mode], environment, true, 30000);
     console.log(output.split(/\r?\n/).filter(line => line.startsWith("PERI_PLAY_DONE")).join("\n"));
+    const summary = JSON.parse(output.match(/PERI_PLAY_DONE (.+)/)![1]!);
+    if (!Number.isFinite(summary.first_frame_ms) || summary.first_frame_ms < 0) throw new Error("missing first-frame timing");
+    startupReports.push({ mode: mode.length ? "fifo" : "deadline", ...summary, subsecondJoin: summary.first_frame_ms < 1000 });
   }
+  await writeFile(resolve(directory,"startup-report.json"),JSON.stringify(startupReports,null,2));
   // Actual UDP proxy: per-direction queues are bounded; packets exceed neither
   // 64 queued datagrams nor a 250ms scheduled delay. Only the viewer path is impaired.
   const proxyReports = [];
@@ -113,9 +119,10 @@ try {
       packets++; wireBytes+=bytes.length;
       if (impaired && ((elapsed >= 300 && elapsed < 480) || packets % 11 === 0)) { lost++; return; }
       const now = performance.now();
-      next = Math.max(now, next) + (impaired ? bytes.length / 24 : 0); // 24 kB/s
-      const delay = Math.max(0, next - now) + (impaired ? 45 : 0);
-      if (queued >= 64 || delay > 250) { lost++; return; }
+      const reservation = reserveDatagram(now, next, bytes.length, queued, impaired);
+      if (!reservation) { lost++; return; }
+      const { delay } = reservation;
+      next = reservation.next;
       queued++; peak = Math.max(peak, queued);
       const timer = setTimeout(() => { timers.delete(timer); queued--; if (peer) downstream.send(bytes, peer.port, peer.address); }, delay);
       timers.add(timer);
@@ -131,8 +138,16 @@ try {
       const traces=[...phases,...viewer.state.output.split(/\r?\n/),...server.state.output.split(/\r?\n/)]
         .filter(line=>line.startsWith("PERI_TRACE ")).map(line=>JSON.parse(line.slice(11))).filter(event=>event.wall_ms>=traceStart).sort((a,b)=>a.wall_ms-b.wall_ms);
       await writeFile(resolve(directory,`trace-${round}-${mode}.jsonl`),traces.map(event=>JSON.stringify(event)).join("\n")+"\n");
+      const inputs=new Map(traces.filter(event=>event.event==="source_input").map(event=>[event.data.sequence,event.wall_ms]));
+      const deltas=traces.filter(event=>event.event==="frame_output" && inputs.has(event.data.sequence)).map(event=>event.wall_ms-inputs.get(event.data.sequence)!);
+      const negativeClockSamples=deltas.filter(value=>value<0).length;
+      const latencies=deltas.filter(value=>value>=0).sort((a,b)=>a-b);
+      if(latencies.length<30) throw new Error("too few matched software latency samples");
+      const softwareLatency={samples:latencies.length,p50Ms:latencies[Math.floor((latencies.length-1)*.5)],p95Ms:latencies[Math.floor((latencies.length-1)*.95)],maxMs:latencies.at(-1)!,negativeClockSamples};
+      if (!Number.isFinite(summary.first_frame_ms) || summary.first_frame_ms < 0) throw new Error("missing first-frame timing");
+      const subsecond={targetMs:1000,joinPass:summary.first_frame_ms<1000,softwarePass:softwareLatency.maxMs<1000 && negativeClockSamples===0,continuityPass:summary.max_gap_ms<1000,pass:summary.first_frame_ms<1000 && softwareLatency.maxMs<1000 && summary.max_gap_ms<1000 && negativeClockSamples===0};
       if (!phases.some(line=>line.includes('source_report'))) throw new Error("receiver telemetry did not reach encoder");
-      proxyReports.push({ round, mode, targets:[...new Set(rates.map(rate=>rate.target))], rateSwitches:publisher.state.output.split("PERI_RATE_SWITCH").length-1, encodeMeanUs:Math.round(rates.reduce((total,rate)=>total+rate.encodeUs,0)/rates.length),encodeP95Us:rates.map(rate=>rate.encodeUs).sort((a,b)=>a-b)[Math.floor((rates.length-1)*0.95)], encodedBytes:rates.reduce((total,rate)=>total+rate.bytes,0), profile: { downstreamBytesPerSecond: 24000, delayMs: 45, durationMs: 2000, dropEvery: 11, blackoutStartMs: 300, blackoutDurationMs: 180 }, packets, lost, wireBytes, trialMs:Math.round(performance.now()-started), peakQueuedDatagrams: peak, ...summary });
+      proxyReports.push({ round, mode, softwareLatency,subsecond, targets:[...new Set(rates.map(rate=>rate.target))], rateSwitches:publisher.state.output.split("PERI_RATE_SWITCH").length-1, encodeMeanUs:Math.round(rates.reduce((total,rate)=>total+rate.encodeUs,0)/rates.length),encodeP95Us:rates.map(rate=>rate.encodeUs).sort((a,b)=>a-b)[Math.floor((rates.length-1)*0.95)], encodedBytes:rates.reduce((total,rate)=>total+rate.bytes,0), profile: { maxIntraPct:Number(environment.PERI_MAX_INTRA_PCT ?? 0), queueModel: "admitted-datagrams-v2", downstreamBytesPerSecond: 24000, delayMs: 45, durationMs: 2000, dropEvery: 11, blackoutStartMs: 300, blackoutDurationMs: 180 }, packets, lost, wireBytes, trialMs:Math.round(performance.now()-started), peakQueuedDatagrams: peak, ...summary });
     } finally { for (const timer of timers) clearTimeout(timer); downstream.close(); upstream.close(); }
   }
   await writeFile(resolve(directory, "network-report.json"), JSON.stringify(proxyReports, null, 2));

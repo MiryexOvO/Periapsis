@@ -21,7 +21,7 @@
 原生发布接入和单资源 Relay 库已实现，提供 AV1 编码源经 Relay 到双接收端的保真示例。
 另提供分进程 Relay、AV1 文件发布与录制命令，使用证书校验及独立发布/订阅凭据。
 原生 AV1 GOP 视频可持续解码播放，支持本地播放时间映射、截止时间恢复和有限重连；
-音频同步、接收反馈和推流软件 SDK/插件尚待实现。
+已提供关键帧请求、接收报告及可选单观看端调节实验；原生音频同步、稳定 SDK 与推流插件尚待实现。
 MPQUIC 定位为可选原生端多路径增强模块，当前尚未实现，单路径不依赖它运行。
 
 主线是原生 QUIC 发布、Relay 分发和浏览器 WebTransport 接收。
@@ -49,11 +49,11 @@ cargo build -p peri-native --bin peri
 .\target\debug\peri.exe --help
 ```
 
-程序提供init、relay、publish、receive命令；Linux/macOS使用`./target/debug/peri`。
-服务读取独立发布/订阅凭据，客户端校验证书和服务器名称；文件发布暂限AV1全关键帧。
+程序提供init、relay、publish、live、receive、play命令；Linux/macOS使用`./target/debug/peri`。
+服务读取独立发布/订阅凭据，客户端校验证书和服务器名称；文件发布支持受限 AV1 GOP，另有实时合成编码源。
 证书、凭据和三终端使用步骤见[原生服务说明](docs/PERI-SERVICE-01.md)。
 可用`pnpm run native:check`或`npm run native:check`验证分进程保真、鉴权拒绝和重新发布。
-需要Node.js、Rust及AV1 FFmpeg；原生服务尚无实时观看UI，下方网页演示仍使用早期链路。
+需要Node.js、Rust及AV1 FFmpeg；原生观看采用实验 FFplay 输出；下方网页演示仍使用早期链路。
 
 ### 原生发布与 AV1 Relay 验证
 
@@ -281,3 +281,5 @@ pnpm run native:gop:check
 原生单观看端接收报告、恢复测量和可选码率实验见[反馈调节说明](docs/PERI-ADAPTATION-01.md)。默认使用固定码率。
 
 减少码率切换重建的可选常驻编码方案与资源成本见[切换实验](docs/PERI-SWITCH-02.md)。
+
+当前实现边界见[模块表](docs/PERI-MODULES.md)，外部应用接入见[Rust 指南](docs/PERI-INTEGRATION-01.md)。亚秒目标与当前测量口径见[延迟说明](docs/PERI-LATENCY-01.md)。

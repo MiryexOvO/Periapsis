@@ -1,5 +1,5 @@
-//! Shared PERI application types. No I/O and no MOQT wire redefinitions.
-//! PERI 共用的应用层类型，不执行 I/O，也不重新定义 MOQT 线格式。
+//! Shared PERI application types; no network I/O.
+//! PERI 共用的应用层类型，不执行网络 I/O。
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

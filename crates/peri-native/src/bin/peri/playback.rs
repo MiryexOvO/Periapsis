@@ -151,6 +151,8 @@ impl Decoder {
 
 #[derive(Default)]
 struct Stats {
+    started: Option<Instant>,
+    first_frame_ms: Option<u128>,
     decoded: u32,
     dropped: u32,
     recoveries: u32,
@@ -188,7 +190,10 @@ async fn report_gap(
 }
 
 pub async fn play(args: &[String]) -> Result<(), Error> {
-    let mut stats = Stats::default();
+    let mut stats = Stats {
+        started: Some(Instant::now()),
+        ..Stats::default()
+    };
     let operation = async {
         loop {
             match play_once(args, &mut stats).await {
@@ -225,7 +230,7 @@ pub async fn play(args: &[String]) -> Result<(), Error> {
         println!(
             "PERI_PLAY_DONE {}",
             serde_json::json!({
-                "decoded": stats.decoded, "dropped": stats.dropped, "recoveries": stats.recoveries,
+                "first_frame_ms": stats.first_frame_ms, "decoded": stats.decoded, "dropped": stats.dropped, "recoveries": stats.recoveries,
                 "reconnects": stats.reconnects, "max_gap_ms": stats.max_gap,
                 "max_lateness_ms": stats.max_lag, "freeze_ms":stats.freeze_ms, "p50_lateness_ms": percentile(50), "p95_lateness_ms": percentile(95)
             })
@@ -256,6 +261,8 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
         .find(|t| t.codec == "video/av1")
         .ok_or("no AV1")?
         .clone();
+    // Late join must request an independent unit rather than wait for the natural GOP.
+    subscriber.request_keyframe(track.id).await?;
     let mut buffer = DecodeBuffer::new(
         subscriber.catalog().clone(),
         &agreement,
@@ -337,10 +344,9 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 continue;
             }
             if waiting_key && frame.kind != FrameKind::Key {
-                if stats.recoveries > 0 {
-                    subscriber.request_keyframe(track.id).await?;
-                    report_gap(&subscriber, track.id, &buffer, stats).await?;
-                }
+                // The control layer rate-limits retries, including initial join.
+                subscriber.request_keyframe(track.id).await?;
+                report_gap(&subscriber, track.id, &buffer, stats).await?;
                 stats.dropped += 1;
                 continue;
             }
@@ -445,6 +451,11 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             .await??;
                         }
                         let shown = Instant::now();
+                        if stats.first_frame_ms.is_none() {
+                            stats.first_frame_ms = stats
+                                .started
+                                .map(|start| shown.duration_since(start).as_millis());
+                        }
                         stats.max_lag = stats
                             .max_lag
                             .max(shown.saturating_duration_since(target).as_millis());
@@ -461,6 +472,10 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             .lateness
                             .push(shown.saturating_duration_since(target).as_millis());
                         progress = shown;
+                        peri_native::trace(
+                            "frame_output",
+                            serde_json::json!({"sequence":frame.sequence}),
+                        );
                         stats.decoded += 1;
                         stats.played_sequence = frame.sequence;
                         stats.media_us = frame.timestamp_us;
