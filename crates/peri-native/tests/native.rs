@@ -763,3 +763,80 @@ async fn receiver_reports_enforce_role_bounds_and_reach_sender() -> Result<(), T
     assert!(received.valid());
     Ok(())
 }
+
+#[tokio::test]
+async fn recovery_skips_stalled_dependency_without_waiting_for_payload() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET),
+    )?;
+    // A valid dependent header advertises 1MiB but never sends its payload or FIN.
+    let mut slow = pair.incoming.open_uni().await?;
+    let mut header = vec![0; 25];
+    header[21..25].copy_from_slice(&(1024u32 * 1024).to_be_bytes());
+    slow.write_all(&header).await?;
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            subscriber.recv_recovery(BUDGET, Duration::from_secs(1))
+        )
+        .await??,
+        None
+    );
+    assert_eq!(
+        tokio::time::timeout(BUDGET, slow.stopped()).await??,
+        Some(1u32.into())
+    );
+    let object = Object {
+        sequence: 2,
+        timestamp_us: 0,
+        duration_us: 20000,
+        independent: true,
+        payload: vec![42],
+    };
+    let (_, received) = tokio::try_join!(
+        publisher.send(&object, BUDGET),
+        subscriber.recv_recovery(BUDGET, Duration::from_secs(1))
+    )?;
+    assert_eq!(received, Some(object));
+    // Header validation cannot be bypassed by marking an object dependent.
+    header[21..25].copy_from_slice(&u32::MAX.to_be_bytes());
+    let mut invalid = pair.incoming.open_uni().await?;
+    invalid.write_all(&header).await?;
+    invalid.finish()?;
+    assert!(matches!(
+        subscriber
+            .recv_recovery(BUDGET, Duration::from_secs(1))
+            .await,
+        Err(Error::Protocol("object header"))
+    ));
+    // Recovery mode must still reject malformed retained objects, including trailing data.
+    header[20] = 1;
+    header[21..25].copy_from_slice(&1u32.to_be_bytes());
+    let mut trailing = pair.incoming.open_uni().await?;
+    trailing.write_all(&header).await?;
+    trailing.write_all(&[42, 0]).await?;
+    trailing.finish()?;
+    assert!(matches!(
+        subscriber
+            .recv_recovery(BUDGET, Duration::from_secs(1))
+            .await,
+        Err(Error::Protocol("object trailing data"))
+    ));
+    let mut unfinished = pair.incoming.open_uni().await?;
+    unfinished.write_all(&header).await?;
+    unfinished.write_all(&[42]).await?;
+    assert_eq!(
+        subscriber
+            .recv_recovery(BUDGET, Duration::from_millis(30))
+            .await?,
+        None
+    );
+    assert_eq!(
+        tokio::time::timeout(BUDGET, unfinished.stopped()).await??,
+        Some(1u32.into())
+    );
+    assert!(subscriber.agreement().is_some());
+    Ok(())
+}

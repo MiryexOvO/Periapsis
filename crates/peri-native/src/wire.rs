@@ -50,6 +50,15 @@ pub fn encode_object(object: &Object) -> Result<Vec<u8>, Error> {
 }
 
 pub async fn read_object<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Object, Error> {
+    read_object_selected(reader, false)
+        .await?
+        .ok_or(Error::Protocol("object selection"))
+}
+
+pub async fn read_object_selected<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    independent_only: bool,
+) -> Result<Option<Object>, Error> {
     let sequence = reader.read_u64().await?;
     let timestamp_us = reader.read_u64().await?;
     let duration_us = reader.read_u32().await?;
@@ -58,19 +67,23 @@ pub async fn read_object<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Object,
     if flags > 1 || size == 0 || size > MAX_PAYLOAD {
         return Err(Error::Protocol("object header"));
     }
+    // 先校验长度和标志再跳过，防止恢复模式绕过头部边界检查；不分配旧参考负载。
+    if independent_only && flags == 0 {
+        return Ok(None);
+    }
     let mut payload = vec![0; size];
     reader.read_exact(&mut payload).await?;
     // 每个单向流只允许一个对象，禁止拼接对象或忽略尾部数据。
     if reader.read(&mut [0]).await? != 0 {
         return Err(Error::Protocol("object trailing data"));
     }
-    Ok(Object {
+    Ok(Some(Object {
         sequence,
         timestamp_us,
         duration_us,
         independent: flags == 1,
         payload,
-    })
+    }))
 }
 
 #[cfg(test)]

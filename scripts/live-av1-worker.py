@@ -13,7 +13,14 @@ def make_codec(rate):
     intra_pct = int(os.environ.get('PERI_MAX_INTRA_PCT', '0'))
     if intra_pct not in (0, 100, 200): raise RuntimeError('PERI_MAX_INTRA_PCT must be 0, 100 or 200')
     if intra_pct: context.options['aom-params'] = f'max-intra-rate={intra_pct}'
+    # 恒定码率候选用200ms编码缓冲抑制突发；默认仍保留原有VBR对照。
+    rate_control = os.environ.get('PERI_RATE_CONTROL', 'vbr')
+    if rate_control not in ('vbr', 'cbr'): raise RuntimeError('PERI_RATE_CONTROL must be vbr or cbr')
+    if rate_control == 'cbr':
+        context.options.update(minrate=str(rate), maxrate=str(rate), bufsize=str(rate // 5))
     context.open()
+    if rate_control == 'cbr' and any(k in context.options for k in ('minrate','maxrate','bufsize')):
+        raise RuntimeError('encoder did not consume CBR options')
     return context
 pool={rate:make_codec(rate) for rate in (100000,150000,225000,300000)} if os.environ.get('PERI_ENCODER_POOL')=='1' else None
 codec=pool[target_rate] if pool is not None else make_codec(target_rate)

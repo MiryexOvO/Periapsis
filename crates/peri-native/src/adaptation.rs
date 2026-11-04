@@ -171,3 +171,65 @@ mod switch_tests {
         assert_eq!(s.rate_for(75, 150000, 126562, false), 100000);
     }
 }
+
+/// Coalesces recovery demand without postponing it on repeated requests.
+/// The caller confirms actual independent encoding with `encoded`.
+/// 合并恢复需求，重复请求不延后冷却；只有实际编码出独立帧后才能确认。
+pub struct RecoveryPacer {
+    interval: Duration,
+    last: Option<Instant>,
+    pending: bool,
+}
+impl RecoveryPacer {
+    /// 冷却限定为300至1000毫秒；超出范围拒绝，避免无界关键帧突发。
+    pub fn new(interval: Duration) -> Option<Self> {
+        if !(Duration::from_millis(300)..=Duration::from_secs(1)).contains(&interval) {
+            return None;
+        }
+        Some(Self {
+            interval,
+            last: None,
+            pending: false,
+        })
+    }
+    /// 合并请求但不重置上次编码时间，持续请求不会饿死恢复。
+    pub fn request(&mut self) {
+        self.pending = true;
+    }
+    /// 只检查单调时钟和待处理需求，不提前消耗恢复机会。
+    pub fn ready(&self, now: Instant) -> bool {
+        self.pending
+            && self
+                .last
+                .is_none_or(|last| now.saturating_duration_since(last) >= self.interval)
+    }
+    /// 实际独立帧编码成功后清除需求并开始冷却，编码失败不得调用。
+    pub fn encoded(&mut self, now: Instant) {
+        self.pending = false;
+        self.last = Some(now);
+    }
+}
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[test]
+    fn repeated_demand_cannot_starve_recovery_or_exceed_time_budget() {
+        let t = Instant::now();
+        let mut p = RecoveryPacer::new(Duration::from_millis(333)).unwrap();
+        assert!(!p.ready(t));
+        p.request();
+        assert!(p.ready(t));
+        p.encoded(t);
+        for ms in 1..333 {
+            p.request();
+            assert!(!p.ready(t + Duration::from_millis(ms)));
+        }
+        assert!(p.ready(t + Duration::from_millis(333)));
+        p.encoded(t + Duration::from_millis(333));
+        assert!(!p.ready(t + Duration::from_secs(10)));
+        p.request();
+        assert!(p.ready(t + Duration::from_secs(10)));
+        assert!(RecoveryPacer::new(Duration::ZERO).is_none());
+        assert!(RecoveryPacer::new(Duration::from_secs(2)).is_none());
+    }
+}

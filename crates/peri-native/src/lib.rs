@@ -212,6 +212,7 @@ impl Session {
 
     /// Queue bytes in stream order and retain a bounded slot until ACK or cancellation.
     /// The budget includes both queuing and acknowledgement; callers must finish or drop.
+    /// 预算包含排队和确认等待；句柄持有有界发送槽，调用方必须完成或释放。
     pub async fn start_send(&self, object: &Object, budget: Duration) -> Result<ObjectSend, Error> {
         if !self.publisher {
             return Err(Error::Protocol("subscriber cannot publish"));
@@ -225,6 +226,12 @@ impl Session {
         let stream = tokio::time::timeout_at(deadline, self.guard.0.open_uni())
             .await
             .map_err(|_| Error::Timeout)?
+            .map_err(transport)?;
+        // Independent objects unblock decoding. Prioritize their unsent bytes
+        // over dependent media without changing congestion control or deadlines.
+        // 独立对象可恢复解码，优先调度其未发送字节；拥塞控制和截止时间仍有效。
+        stream
+            .set_priority(if object.independent { 10 } else { 0 })
             .map_err(transport)?;
         let mut pending = PendingSend {
             stream,
@@ -250,10 +257,33 @@ impl Session {
 
     /// Live receive: bound an accepted object's residence separately from idle waiting.
     /// None denotes a local expiry or an explicit RESET(1), never malformed framing.
+    /// 空闲等待与对象驻留分别限时；None仅表示超时或RESET(1)，格式错误仍返回错误。
     pub async fn recv_live(
         &mut self,
         idle: Duration,
         residence: Duration,
+    ) -> Result<Option<Object>, Error> {
+        self.recv_live_selected(idle, residence, false).await
+    }
+
+    /// Recovery receive: discard dependent objects after a validated header,
+    /// without allocating or waiting for their payload. None also means skipped.
+    /// Retained independent objects still require complete framing and FIN.
+    /// 恢复时先校验头部，依赖对象不分配负载并主动取消；None也包含主动跳过。
+    /// 保留的独立对象必须完整读取并收到FIN，不能把半帧交给解码器。
+    pub async fn recv_recovery(
+        &mut self,
+        idle: Duration,
+        residence: Duration,
+    ) -> Result<Option<Object>, Error> {
+        self.recv_live_selected(idle, residence, true).await
+    }
+
+    async fn recv_live_selected(
+        &mut self,
+        idle: Duration,
+        residence: Duration,
+        independent_only: bool,
     ) -> Result<Option<Object>, Error> {
         if self.publisher {
             return Err(Error::Protocol("publisher cannot subscribe"));
@@ -265,15 +295,29 @@ impl Session {
             .await
             .map_err(|_| Error::Timeout)?
             .map_err(transport)?;
-        match tokio::time::timeout(residence, wire::read_object(&mut stream)).await {
+        match tokio::time::timeout(
+            residence,
+            wire::read_object_selected(&mut stream, independent_only),
+        )
+        .await
+        {
             Err(_) => {
+                trace(
+                    "object_receive_expired",
+                    serde_json::json!({"residence_ms":residence.as_millis()}),
+                );
                 let _ = stream.stop(1u32.into());
                 Ok(None)
             }
             Ok(Err(Error::Io(error))) if matches!(error.get_ref().and_then(|e| e.downcast_ref::<quinn::ReadError>()), Some(quinn::ReadError::Reset(code)) if *code == 1u32.into()) => {
                 Ok(None)
             }
-            Ok(result) => result.map(Some),
+            Ok(Ok(None)) => {
+                let _ = stream.stop(1u32.into());
+                trace("recovery_object_skipped", serde_json::json!({}));
+                Ok(None)
+            }
+            Ok(result) => result,
         }
     }
 
