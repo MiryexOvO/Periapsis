@@ -26,6 +26,7 @@ pub mod av1;
 mod feedback;
 pub use feedback::{ReceiverReport, RecoveryRequest, trace};
 pub mod media;
+pub mod playback;
 pub mod relay;
 mod wire;
 use peri_types::{Agreement, Hello};
@@ -103,6 +104,20 @@ pub struct Object {
     pub duration_us: u32,
     pub independent: bool,
     pub payload: Vec<u8>,
+}
+
+impl Object {
+    /// 编码有界对象包，复用原生封装校验，供实验适配器使用。
+    pub fn encode_packet(&self) -> Result<Vec<u8>, Error> {
+        wire::encode_object(self)
+    }
+    /// 解码完整对象包，拒绝超长、截断和尾随数据；不代表解码器确认。
+    pub async fn decode_packet(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > MAX_OBJECT_BYTES + 25 {
+            return Err(Error::Protocol("object packet limit"));
+        }
+        wire::read_object(&mut &bytes[..]).await
+    }
 }
 
 struct ConnectionGuard(quinn::Connection);

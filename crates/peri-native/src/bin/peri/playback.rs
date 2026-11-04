@@ -1,17 +1,16 @@
 //! Native streaming AV1 decode; decoder output, rather than receipt, confirms frames.
 use super::{Error, SETUP, connect, hello};
 use peri_native::{
-    av1::IvfWriter,
-    media::{DecodeBuffer, Event, Frame, FrameKind, Subscriber, Track},
+    media::{DecodeBuffer, Event, FrameKind, Subscriber},
+    playback::{Decoder, PlaybackClock},
 };
 use std::{
-    io::Cursor,
     process::Stdio,
     time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, ChildStdout, Command},
+    process::Command,
 };
 
 fn command(name: &str, variable: &str) -> Command {
@@ -63,90 +62,6 @@ pub async fn probe(bytes: &[u8]) -> Result<Vec<u8>, Error> {
         Ok::<_, Error>(bytes)
     };
     tokio::time::timeout(Duration::from_secs(15), work).await?
-}
-
-struct Decoder {
-    child: Child,
-    input: ChildStdin,
-    output: ChildStdout,
-    pixels: Vec<u8>,
-}
-impl Decoder {
-    async fn new(track: &Track) -> Result<Self, Error> {
-        let width = track.width.ok_or("width")?;
-        let height = track.height.ok_or("height")?;
-        if u32::from(width) * u32::from(height) > 1920 * 1080 {
-            return Err("playback limited to 1080p".into());
-        }
-        let mut child = command("ffmpeg", "PERI_FFMPEG")
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-xerror",
-                "-probesize",
-                "32",
-                "-analyzeduration",
-                "0",
-                "-fpsprobesize",
-                "0",
-                "-threads",
-                "1",
-                "-flags",
-                "low_delay",
-                "-blocksize",
-                "32",
-                "-f",
-                "ivf",
-                "-i",
-                "pipe:0",
-                "-map",
-                "0:v:0",
-                "-fps_mode",
-                "passthrough",
-                "-threads",
-                "1",
-                "-pix_fmt",
-                "rgb24",
-                "-f",
-                "rawvideo",
-                "-flush_packets",
-                "1",
-                "pipe:1",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let mut input = child.stdin.take().ok_or("decoder stdin")?;
-        let header = IvfWriter::new(Cursor::new(Vec::new()), track.clone())?
-            .finish()?
-            .into_inner();
-        input.write_all(&header).await?;
-        let output = child.stdout.take().ok_or("decoder stdout")?;
-        Ok(Self {
-            child,
-            input,
-            output,
-            pixels: vec![0; usize::from(width) * usize::from(height) * 3],
-        })
-    }
-    async fn decode(&mut self, frame: &Frame) -> Result<(), Error> {
-        self.input
-            .write_all(&(frame.payload.len() as u32).to_le_bytes())
-            .await?;
-        self.input
-            .write_all(&frame.timestamp_us.to_le_bytes())
-            .await?;
-        self.input.write_all(&frame.payload).await?;
-        self.input.flush().await?;
-        self.output.read_exact(&mut self.pixels).await?;
-        Ok(())
-    }
-    async fn stop(&mut self) {
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
-    }
 }
 
 #[derive(Default)]
@@ -325,7 +240,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
     };
     println!("PERI_PLAY_READY");
     let operation = async {
-        let mut anchor: Option<(u64, Instant)> = None;
+        let mut clock = PlaybackClock::new(Duration::from_millis(120))?;
         let mut waiting_key = true;
 
         let mut previous = 0;
@@ -377,10 +292,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 continue;
             }
             if waiting_key {
-                anchor = Some((
-                    frame.timestamp_us,
-                    Instant::now() + Duration::from_millis(120),
-                ));
+                clock.rebase(frame.timestamp_us, Instant::now())?;
                 waiting_key = false;
             }
             if frame.sequence <= previous {
@@ -402,15 +314,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 continue;
             }
             previous = frame.sequence;
-            let (pts, origin) = anchor.ok_or("playback clock")?;
-            let target = origin
-                .checked_add(Duration::from_micros(
-                    frame
-                        .timestamp_us
-                        .checked_sub(pts)
-                        .ok_or("timeline reversal")?,
-                ))
-                .ok_or("timeline overflow")?;
+            let target = clock.target(frame.timestamp_us)?;
             if target > Instant::now() + Duration::from_secs(1) {
                 return Err("playback timeline gap".into());
             }
@@ -472,7 +376,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                                     .stdin
                                     .as_mut()
                                     .ok_or("display stdin")?
-                                    .write_all(&decoder.pixels),
+                                    .write_all(decoder.pixels()),
                             )
                             .await
                             // 显示管道超时与协议接收超时分开标识，保留故障而不放宽期限。

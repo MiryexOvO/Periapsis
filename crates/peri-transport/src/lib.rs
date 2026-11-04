@@ -3,6 +3,8 @@
 
 pub use moq_net as moq;
 mod compat;
+#[cfg(feature = "media-interop")]
+pub mod media_interop;
 pub mod peer;
 use std::time::Instant;
 use tokio::task::JoinHandle;

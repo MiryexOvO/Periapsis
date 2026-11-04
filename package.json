@@ -35,7 +35,8 @@
     "ingest:check": "node --experimental-strip-types scripts/ingest-check.ts",
     "video:quic:check": "node --experimental-strip-types scripts/video-check.ts --quic",
     "native:recovery:check": "node --experimental-strip-types scripts/native-recovery-check.ts",
-    "native:matrix:check": "node --experimental-strip-types scripts/native-matrix-check.ts"
+    "native:matrix:check": "node --experimental-strip-types scripts/native-matrix-check.ts",
+    "native:interop:check": "node --experimental-strip-types scripts/native-interop-check.ts"
   },
   "name": "periapsis",
   "engines": {

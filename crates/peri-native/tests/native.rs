@@ -1,3 +1,5 @@
+#[path = "../examples/support/playback_check.rs"]
+mod playback_check;
 use peri_native::{ALPN, Error, Object};
 use peri_types::{Extension, Hello, PERI_VERSION, Profile};
 use std::{sync::Arc, time::Duration};
@@ -838,5 +840,42 @@ async fn recovery_skips_stalled_dependency_without_waiting_for_payload() -> Resu
         Some(1u32.into())
     );
     assert!(subscriber.agreement().is_some());
+    Ok(())
+}
+
+/// 同一AV1夹具通过原生PERI传输，输出交给与MoQ相同的外部解码校验。
+#[tokio::test]
+#[ignore = "由native:interop:check提供AV1夹具和输出位置"]
+async fn shared_av1_fixture_crosses_native() -> Result<(), TestError> {
+    let (catalog, frames) = peri_native::av1::read_gop_ivf(
+        &std::fs::read(std::env::var("PERI_AV1_FIXTURE")?)?,
+        &std::fs::read(std::env::var("PERI_AV1_PROBE")?)?,
+    )?;
+    let pair = pair(ALPN).await?;
+    let (publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+    )?;
+    let mut playback = playback_check::PlaybackCheck::new(
+        catalog.clone(),
+        publisher.agreement().ok_or("missing agreement")?,
+        std::env::var("PERI_NATIVE_RGB")?,
+    )?;
+    let mut writer = peri_native::av1::IvfWriter::new(
+        std::fs::File::create(std::env::var("PERI_NATIVE_OUTPUT")?)?,
+        catalog.tracks[0].clone(),
+    )?;
+    for expected in &frames {
+        let object = expected.to_object(&catalog)?;
+        let (_, object) =
+            tokio::try_join!(publisher.send(&object, BUDGET), subscriber.recv(BUDGET))?;
+        let restored = peri_native::media::Frame::from_object(object, &catalog)?;
+        assert_eq!(&restored, expected);
+        playback.render(restored.clone()).await?;
+        writer.push(&restored)?;
+    }
+    assert_eq!(playback.frames, frames.len());
+    writer.finish()?;
+    println!("SHARED_AV1_NATIVE_FRAMES {}", frames.len());
     Ok(())
 }
