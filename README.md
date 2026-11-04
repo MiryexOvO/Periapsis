@@ -279,3 +279,5 @@ pnpm run native:gop:check
 实时 AV1 合成测试画面发布与关键帧响应见[实时编码测试源](docs/PERI-LIVE-01.md)。
 
 原生单观看端接收报告、恢复测量和可选码率实验见[反馈调节说明](docs/PERI-ADAPTATION-01.md)。默认使用固定码率。
+
+减少码率切换重建的可选常驻编码方案与资源成本见[切换实验](docs/PERI-SWITCH-02.md)。
