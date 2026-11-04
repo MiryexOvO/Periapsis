@@ -1,6 +1,6 @@
 # PERI 当前模块与第三方接入边界
 
-项目已经初步分层，但尚未形成稳定发布的第三方 SDK。当前为五个 Rust crate，
+项目已经初步分层，但尚未形成稳定发布的第三方 SDK。正式协议目录当前有四个 Rust crate；
 原生协议的大部分能力仍以 `peri-native` 内部模块提供，并非每个模块都独立成包。
 表中的“已有”描述当前实现，不代表标准化、生产就绪或独立实现互通。
 
@@ -9,7 +9,6 @@
 |共用类型|crates/peri-types|配置、缓冲策略、能力与协商结果|无网络 I/O；与原型共用|
 |会话协商|crates/peri-session|能力校验、配置选择、握手状态机与旧控制编解码|原生路径复用其协商逻辑，采用自己的控制消息|
 |通用调度原型|crates/peri-scheduler|依赖、过期与队列计费|独立原型；原生媒体层未依赖该 crate|
-|早期传输适配|crates/peri-transport|早期对象库适配、QUIC 与控制互通实验|不属于独立 PERI 原生主链路，不是协议的统一传输抽象|
 |原生会话/对象|crates/peri-native/src/lib.rs|ALPN、发布订阅、会话、独立流、取消、有界发送|公共 Rust API；底层接口耦合 Quinn|
 |线格式|peri-native/src/wire.rs|有界控制消息和对象头/FIN 校验|内部模块；独立实现依据协议文档而非调用此模块|
 |媒体层|peri-native/src/media.rs|Catalog、Track、Frame、Publisher、Subscriber、DecodeBuffer|公共 Rust API；调用方提供编码数据和真实解码确认|
@@ -19,8 +18,8 @@
 |媒体策略|peri-native/src/adaptation.rs|单观看端目标码率、切换调度|可选实验；默认关闭，不是固定线协议必选算法|
 |AV1 文件适配|peri-native/src/av1.rs|有界 IVF 导入和录制、探测元数据检查|工具适配；不要求第三方使用 IVF|
 |命令与示例|peri-native/src/bin/peri*、examples|证书初始化、Relay、文件/实时发布、观看录制|应用层，非 SDK 协议要求|
-|编码/解码实验|scripts/live-av1-worker.py、bin/peri/playback.rs|PyAV AV1 编码、FFmpeg 解码、FFplay 输出|可替换；不属于接入方必须采用的媒体栈|
-|早期网页实验|src/、web/|早期浏览器、WebTransport/WebSocket 演示|尚未迁移到独立 PERI 线协议|
+|共享播放工具|peri-native/src/playback.rs|AV1解码、单调时钟、有界GOP调度|公共可选工具；接入方可使用自有解码与呈现|
+|实时测试源|scripts/live-av1-worker.py|PyAV AV1合成编码源|内部验证工具，不属于SDK要求|
 
 ## 给外部开发者保留的路径
 
@@ -45,3 +44,9 @@ C++ SDK、OBS 插件或独立实现互通证明。现有 Rust/TypeScript 互通�
 - MPQUIC/P2P 当前为研发方向，没有已实现的可启用模块。
 
 第三方 Rust 接入步骤见[接入指南](PERI-INTEGRATION-01.md)，线格式见[协议草案](PERI-WIRE-01.md)。
+
+## 依赖边界
+
+正式Cargo工作区只包含上述四个crate，默认构建与全工作区构建均不包含内部对照实现。
+内部研发工具独立管理依赖和锁文件，不作为第三方接入模块或对外SDK能力。
+协商状态机接收中性的传输就绪通知；具体传输认证、ALPN和版本检查由连接层负责。

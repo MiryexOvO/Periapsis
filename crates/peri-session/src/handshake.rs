@@ -6,8 +6,6 @@ use peri_types::{Agreement, Hello, NegotiationError};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-pub const MOQT_VERSION: &str = "moq-transport-22";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Initiator,
@@ -17,7 +15,7 @@ pub enum Role {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     TransportPending,
-    MoqReady,
+    TransportReady,
     AwaitingOffer,
     AwaitingAccept,
     AwaitingAck,
@@ -126,19 +124,17 @@ impl Handshake {
             .flatten()
     }
 
-    pub fn transport_ready(&mut self, version: &str) -> Result<(), HandshakeError> {
+    /// 调用方完成传输认证及版本校验后通知就绪；此处不识别具体外部传输协议。
+    pub fn transport_ready(&mut self) -> Result<(), HandshakeError> {
         if self.state != State::TransportPending {
             return self.fail(HandshakeError::UnexpectedMessage);
         }
-        if version != MOQT_VERSION {
-            return self.fail(HandshakeError::ProtocolVersion);
-        }
-        self.state = State::MoqReady;
+        self.state = State::TransportReady;
         Ok(())
     }
 
     pub fn start(&mut self) -> Result<Option<Message>, HandshakeError> {
-        if self.state != State::MoqReady {
+        if self.state != State::TransportReady {
             return self.fail(HandshakeError::UnexpectedMessage);
         }
         match self.role {
@@ -160,7 +156,7 @@ impl Handshake {
         if matches!(
             self.state,
             State::TransportPending
-                | State::MoqReady
+                | State::TransportReady
                 | State::Active
                 | State::AckPending
                 | State::Rejected
@@ -256,7 +252,7 @@ mod tests {
     fn endpoint(role: Role) -> Handshake {
         let mut endpoint =
             Handshake::new(role, "0123456789abcdef0123456789abcdef".into(), hello()).unwrap();
-        endpoint.transport_ready(MOQT_VERSION).unwrap();
+        endpoint.transport_ready().unwrap();
         endpoint
     }
 
@@ -319,17 +315,14 @@ mod tests {
     }
 
     #[test]
-    fn lite_transport_cannot_start_peri_negotiation() {
+    fn unready_transport_cannot_start_negotiation() {
         let mut endpoint = Handshake::new(
             Role::Initiator,
             "0123456789abcdef0123456789abcdef".into(),
             hello(),
         )
         .unwrap();
-        assert_eq!(
-            endpoint.transport_ready("moq-lite-02"),
-            Err(HandshakeError::ProtocolVersion)
-        );
+        assert_eq!(endpoint.start(), Err(HandshakeError::UnexpectedMessage));
         assert_eq!(endpoint.state(), State::Rejected);
     }
 

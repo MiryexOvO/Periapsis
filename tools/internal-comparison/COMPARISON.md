@@ -12,12 +12,12 @@
 5. 画质应比较实际输出，包括停顿时保持上一画面的失真；现有30帧离线PSNR/SSIM只能说明源编码代价。
 
 协议版本必须逐项注明，MoQT-22的结果不可外推成所有MoQ实现或最新草案的结果。
-已提供可选的对象封装适配层：`peri-transport` 的 `media-interop` feature。
+已提供可选的对象封装适配层：`peri-internal-comparison` 的 `media-interop` feature。
 `media_interop::encode_frame/decode_frame`复用peri-native的Frame和对象封装校验，避免重新编码或复制媒体语义。
 这是PERI媒体对象承载于MoQ的实验配置，不是官方MoQ媒体封装；目录与版本标识须由应用显式约定。
 默认feature关闭，原生PERI主路径不依赖MoQ。
 
-运行 `pnpm native:interop:check`，先按实时源说明配置PyAV与FFmpeg。
+运行 `node --experimental-strip-types tools/internal-comparison/media-check.ts`，先按实时源说明配置PyAV与FFmpeg。
 该命令生成同一段30帧AV1夹具，经两条带证书校验的原生QUIC传输后写回IVF，
 用同一个FFmpeg逐帧核对像素哈希；输出report.json包含源文件哈希与固定MoQ版本。
 这是回环媒体完整性验证，不测实时输出时钟、冻结、CPU或协议性能胜负。
@@ -57,5 +57,5 @@ MoQ订阅侧须在完整包交给decode_frame之前设置接收边界；不能�
 LiveReceiver持有后台任务，Drop会取消组读取并释放本层许可证；它不替调用方关闭整个MoQ会话。
 调用方必须持续读取事件，及时释放LiveFrame，并在Err后释放接收器执行会话错误处理。
 
-`native:interop:check`新增真实MoQT半帧停滞/新关键帧到达验证，报告liveGroupRecovery=true，
+`内部 media-check.ts`新增真实MoQT半帧停滞/新关键帧到达验证，报告liveGroupRecovery=true，
 恢复关键帧经共享调度/解码后RGB须与源首帧相同。它仍不是完整实时弱网性能对照。

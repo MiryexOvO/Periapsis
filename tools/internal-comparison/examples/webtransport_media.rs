@@ -1,7 +1,7 @@
 //! Loopback WebTransport media gateway fed by a trusted, bounded stdin publisher.
 //! 仅本机使用的 WebTransport 媒体网关，接收可信发布进程提供的有界输入。
 use base64::{Engine, engine::general_purpose::STANDARD};
-use peri_transport::moq;
+use peri_internal_comparison::moq;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -119,7 +119,7 @@ async fn main() -> Result<(), Error> {
                     let _permit = permit;
                     let result = async {
                         let transport = request.respond(web_transport_quinn::proto::ConnectResponse::OK.with_protocol("moqt-22")).await?;
-                        let session = peri_transport::accept_webtransport(transport, &origin).await?;
+                        let session = peri_internal_comparison::accept_webtransport(transport, &origin).await?;
                         session.inner.closed().await;
                         Ok::<(), Error>(())
                     }.await;

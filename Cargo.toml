@@ -1,5 +1,7 @@
 [workspace]
-members = ["crates/peri-types", "crates/peri-session", "crates/peri-scheduler", "crates/peri-transport", "crates/peri-native"]
+members = ["crates/peri-types", "crates/peri-session", "crates/peri-scheduler", "crates/peri-native"]
+default-members = ["crates/peri-types", "crates/peri-session", "crates/peri-scheduler", "crates/peri-native"]
+exclude = ["tools/internal-comparison"]
 resolver = "3"
 
 [workspace.package]

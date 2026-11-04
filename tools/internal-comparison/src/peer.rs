@@ -43,7 +43,11 @@ pub async fn negotiate(
 ) -> Result<ActivePeer, Error> {
     tokio::time::timeout(timeout, async move {
         let mut handshake = Handshake::new(role, session_id.clone(), hello)?;
-        handshake.transport_ready(session.inner.version().as_str())?;
+        // 外部协议版本检查只属于内部适配器，正式协商状态机只接收已校验的就绪通知。
+        if session.inner.version().as_str() != "moq-transport-22" {
+            return Err("unsupported comparison transport version".into());
+        }
+        handshake.transport_ready()?;
         let (local, remote) = match role {
             Role::Initiator => ("initiator", "responder"),
             Role::Responder => ("responder", "initiator"),

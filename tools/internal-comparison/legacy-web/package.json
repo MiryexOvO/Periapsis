@@ -1,0 +1,42 @@
+{
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "devDependencies": {
+    "@types/dom-webcodecs": "0.1.19",
+    "@types/node": "24.10.0",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.62.1",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@moq/loc": "0.2.4",
+    "@moq/msf": "0.3.1",
+    "@moq/net": "0.4.7",
+    "@moq/qmux": "0.3.4",
+    "ws": "8.22.1"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "dev": "node --experimental-strip-types src/server.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "demo": "node --experimental-strip-types src/demo.ts",
+    "object": "node --experimental-strip-types src/cli.ts",
+    "handshake": "node --experimental-strip-types src/handshake-demo.ts",
+    "interop": "node --experimental-strip-types scripts/rust-interop.ts",
+    "video": "node --experimental-strip-types scripts/video.ts",
+    "video:check": "node --experimental-strip-types scripts/video-check.ts",
+    "video:quic": "node --experimental-strip-types scripts/video.ts --quic",
+    "ingest": "node --experimental-strip-types scripts/ingest.ts",
+    "ingest:check": "node --experimental-strip-types scripts/ingest-check.ts",
+    "video:quic:check": "node --experimental-strip-types scripts/video-check.ts --quic"
+  },
+  "name": "peri-internal-legacy-web",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@11.18.0",
+  "description": "Private historical comparison experiments"
+}

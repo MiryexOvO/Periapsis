@@ -1,0 +1,4 @@
+{
+  "forbiddenNamePattern": "^moq(?:-|$)|^peri-internal-comparison$",
+  "forbiddenTextPattern": "moq"
+}

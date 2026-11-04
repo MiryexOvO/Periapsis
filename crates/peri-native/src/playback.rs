@@ -185,7 +185,7 @@ pub enum GopAdmission {
     WaitingKey,
 }
 /// 最新GOP优先的有界单视频缓存；旧组到达不能推翻新的关键帧。
-/// 不读取网络流；MoQ订阅端必须在分配负载之前另设接收/组并发边界。
+/// 不读取网络流；订阅端必须在分配负载之前另设接收/组并发边界。
 pub struct GopScheduler {
     catalog: Catalog,
     agreement: Agreement,
