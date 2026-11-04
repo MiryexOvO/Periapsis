@@ -124,7 +124,8 @@ pub struct Frame {
     pub payload: Vec<u8>,
 }
 impl Frame {
-    pub(crate) fn validate(&self, catalog: &Catalog) -> Result<(), Error> {
+    /// 校验单帧结构及轨道约束；不确认依赖已经收取或解码。
+    pub fn validate(&self, catalog: &Catalog) -> Result<(), Error> {
         let track = catalog.track(self.track)?;
         if self.sequence == 0
             || self.duration_us == 0
@@ -150,7 +151,8 @@ impl Frame {
         }
         Ok(())
     }
-    fn object(&self, catalog: &Catalog) -> Result<Object, Error> {
+    /// 校验媒体语义后转换为对象，供独立传输适配器复用。
+    pub fn to_object(&self, catalog: &Catalog) -> Result<Object, Error> {
         self.validate(catalog)?;
         let mut payload = vec![self.kind.tag()];
         payload.extend_from_slice(&self.track.to_be_bytes());
@@ -167,7 +169,8 @@ impl Frame {
             payload,
         })
     }
-    fn from_object(object: Object, catalog: &Catalog) -> Result<Self, Error> {
+    /// 恢复并校验媒体语义，收取成功不等于解码成功。
+    pub fn from_object(object: Object, catalog: &Catalog) -> Result<Self, Error> {
         let bytes = &object.payload;
         if bytes.len() < 4 || bytes[3] as usize > MAX_DEPENDENCIES {
             return Err(Error::Protocol("media header"));
@@ -238,7 +241,7 @@ impl Publisher {
     /// 校验媒体单元并在本地 I/O 预算内发送。
     pub async fn send(&self, frame: &Frame, budget: Duration) -> Result<(), Error> {
         self.session
-            .send(&frame.object(&self.catalog)?, budget)
+            .send(&frame.to_object(&self.catalog)?, budget)
             .await
     }
     pub fn poll_keyframe_request(&self) -> Result<Option<u16>, Error> {
@@ -274,7 +277,7 @@ impl Publisher {
         budget: Duration,
     ) -> Result<crate::ObjectSend, Error> {
         self.session
-            .start_send(&frame.object(&self.catalog)?, budget)
+            .start_send(&frame.to_object(&self.catalog)?, budget)
             .await
     }
 }
@@ -687,7 +690,7 @@ mod tests {
         let (catalog, _) = fixture();
         let media = frame(3, FrameKind::Reference, vec![1, 2]);
         assert_eq!(
-            Frame::from_object(media.object(&catalog).unwrap(), &catalog).unwrap(),
+            Frame::from_object(media.to_object(&catalog).unwrap(), &catalog).unwrap(),
             media
         );
         for scenario in 0..5 {
@@ -699,9 +702,9 @@ mod tests {
                 3 => invalid.kind = FrameKind::Key,
                 _ => invalid.duration_us = 0,
             }
-            assert!(invalid.object(&catalog).is_err());
+            assert!(invalid.to_object(&catalog).is_err());
         }
-        let mut object = media.object(&catalog).unwrap();
+        let mut object = media.to_object(&catalog).unwrap();
         object.payload[3] = 9;
         assert!(Frame::from_object(object, &catalog).is_err());
     }

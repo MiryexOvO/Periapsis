@@ -64,3 +64,15 @@ crate 首页的 `publish_encoded` no_run 示例由 Rust 文档测试编译，验
 `None`包含主动跳过、读取超时和RESET(1)，不是连接关闭；其他协议错误仍返回错误。
 该接口适合全部依赖轨道均在恢复的阶段。多轨道中仍正常播放的轨道应继续使用recv_live，避免全局跳过。
 头部本身停滞仍会占用一次读取预算，接口没有承诺消除所有跨流等待或任意网络下的亚秒延迟。
+
+## 实验传输适配边界
+
+`Frame::to_object/from_object`供外部传输适配器复用媒体校验，Catalog仍须先按Agreement验证。
+`Object::encode_packet/decode_packet`处理单个有界完整包，拒绝截断、超长和尾随数据。
+这些接口不替代Session协商、接收配额、跨帧排序或解码确认。
+可选MoQ承载例子与已验证范围见PERI-COMPARISON-01.md。
+
+可选共享播放工具位于playback模块：Decoder需要本机FFmpeg，核心Session/Frame接入仍可使用自己的解码器。
+Decoder::decode必须受调用方超时保护，取消或失败后停止并重建，不能复用半帧管道。
+GopScheduler::push返回ResetDecoder时必须取消旧任务；decoded只在实际输出完整像素后调用。
+多轨道音视频同步、MoQ接收并发及网络读前配额仍由应用负责，单视频调度器不提供这些能力。

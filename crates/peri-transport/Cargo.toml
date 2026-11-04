@@ -6,7 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+media-interop = ["dep:peri-native"]
+
 [dependencies]
+peri-native = { path = "../peri-native", optional = true }
 peri-session = { path = "../peri-session" }
 peri-types.workspace = true
 moq-net = "=0.3.18"
