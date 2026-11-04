@@ -21,6 +21,7 @@ import { startRelay } from "./relay.ts";
  */
 export async function startVideoDemo(port = 8080, transport: "websocket" | "webtransport" = "websocket", source?: MediaSource) {
   const root = fileURLToPath(new URL("../", import.meta.url));
+  const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
   await mkdir(new URL("../dist/", import.meta.url), { recursive: true });
   let video: ReturnType<typeof parseIvf> | undefined;
   let audioPackets: Uint8Array[] = [];
@@ -36,7 +37,7 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
     if (audioPackets.length !== 150) throw new Error("missing Opus packets");
   }
   if (transport === "webtransport") {
-    const result = spawnSync("cargo", ["build", "--locked", "-p", "peri-transport", "--example", "webtransport_media"], { cwd: root, stdio: "inherit", windowsHide: true });
+    const result = spawnSync("cargo", ["build", "--locked", "--manifest-path", "tools/internal-comparison/Cargo.toml", "--target-dir", "target", "-p", "peri-internal-comparison", "--example", "webtransport_media"], { cwd: repositoryRoot, stdio: "inherit", windowsHide: true });
     if (result.error || result.status !== 0) throw new Error("Rust WebTransport gateway build failed");
   }
   await build({ entryPoints: [fileURLToPath(new URL("./video-player.ts", import.meta.url))], bundle: true, platform: "browser", format: "esm", outfile: fileURLToPath(new URL("../dist/player.js", import.meta.url)) });
@@ -75,7 +76,7 @@ export async function startVideoDemo(port = 8080, transport: "websocket" | "webt
   let gateway: ReturnType<typeof spawn> | undefined;
   if (transport === "webtransport") {
     try {
-    gateway = spawn(resolve(process.env.CARGO_TARGET_DIR ?? resolve(root, "target"), "debug/examples", process.platform === "win32" ? "webtransport_media.exe" : "webtransport_media"), [], { cwd: root, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+    gateway = spawn(resolve(process.env.CARGO_TARGET_DIR ?? resolve(repositoryRoot, "target"), "debug/examples", process.platform === "win32" ? "webtransport_media.exe" : "webtransport_media"), [], { cwd: root, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
     const child = gateway;
     child.stdin!.on("error", () => {});
     const lines = createInterface({ input: child.stdout! });

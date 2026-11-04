@@ -39,8 +39,8 @@ pub fn decode(bytes: &[u8]) -> Result<Message, WireError> {
     Ok(message)
 }
 
-/// Encode and validate an application control; MOQT remains responsible for framing.
-/// 编码并校验应用层控制消息，帧封装仍由 MOQT 负责。
+/// Encode and validate an application control; the transport owns framing.
+/// 编码并校验应用层控制消息，具体帧封装由传输层负责。
 pub fn encode(message: &Message) -> Result<Vec<u8>, WireError> {
     let bytes = serde_json::to_vec(message).map_err(|e| WireError(e.to_string()))?;
     decode(&bytes)?;

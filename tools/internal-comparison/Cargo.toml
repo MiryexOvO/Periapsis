@@ -1,32 +1,41 @@
 [package]
-name = "peri-transport"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-publish.workspace = true
+name = "peri-internal-comparison"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+publish = false
 
 [features]
 default = []
 media-interop = ["dep:peri-native"]
 
 [dependencies]
-peri-native = { path = "../peri-native", optional = true }
-peri-session = { path = "../peri-session" }
-peri-types.workspace = true
+peri-native = { path = "../../crates/peri-native", optional = true }
+peri-session = { path = "../../crates/peri-session" }
+peri-types = { path = "../../crates/peri-types" }
 moq-net = "=0.3.18"
 web-transport-quinn = { version = "=0.13.5", default-features = false, features = ["ring"] }
 transport-v5 = { package = "web-transport-trait", version = "=0.5.2" }
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "io-util", "io-std", "sync"] }
 
 [dev-dependencies]
-serde.workspace = true
-serde_json.workspace = true
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.154"
 base64 = "=0.23.1"
 sha2 = "=0.11.1"
 time = "0.3"
 rcgen = "=0.13.2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+
+[workspace]
+resolver = "3"
+
+[profile.dev.package.ring]
+debug = 0

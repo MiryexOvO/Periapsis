@@ -8,7 +8,7 @@ import { Handshake, encodeControl, decodeControl } from "../src/handshake.ts";
 import { defaultHello } from "../src/session.ts";
 
 // 显式构建真实 Rust 程序，避免将 TypeScript 内部往返误认为跨语言互通。
-const root = fileURLToPath(new URL("../", import.meta.url));
+const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const build = spawnSync("cargo", ["build", "--locked", "-p", "peri-session", "--example", "responder"], { cwd: root, stdio: "inherit", windowsHide: true });
 if (build.error) throw build.error;
 if (build.status !== 0) throw new Error("Rust responder build failed");

@@ -1,3 +1,4 @@
+//! MoQ对照实验工具，不属于PERI原生协议主链路。
 //! Native MOQT-22 adapter over authenticated QUIC connections.
 //! 基于已认证 QUIC 连接的原生 MOQT-22 适配器，复用上游协议实现。
 

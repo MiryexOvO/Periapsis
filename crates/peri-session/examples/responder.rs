@@ -1,7 +1,7 @@
 //! Line-oriented control responder for cross-language interoperability checks.
 //! 用于跨语言互通检查的逐行控制消息响应端，标准输出只承载协议对象。
 use peri_session::{
-    handshake::{Handshake, MOQT_VERSION, Role, State},
+    handshake::{Handshake, Role, State},
     wire,
 };
 use peri_types::{Hello, PERI_VERSION, Profile};
@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         extensions: vec![],
     };
     let mut session = Handshake::new(Role::Responder, id, local)?;
-    session.transport_ready(MOQT_VERSION)?;
+    session.transport_ready()?;
     session.start()?;
     // take 限制读取分配；过长行不能先被无限缓存再做大小判断。
     let mut input = io::stdin().lock();

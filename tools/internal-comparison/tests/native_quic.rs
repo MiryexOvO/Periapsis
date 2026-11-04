@@ -1,7 +1,7 @@
 #[cfg(feature = "media-interop")]
-#[path = "../../peri-native/examples/support/playback_check.rs"]
+#[path = "../../../crates/peri-native/examples/support/playback_check.rs"]
 mod playback_check;
-use peri_transport::{ALPN, moq};
+use peri_internal_comparison::{ALPN, moq};
 use std::{sync::Arc, time::Duration};
 use web_transport_quinn::quinn;
 
@@ -47,13 +47,13 @@ async fn native_moqt22_delivers_an_object() -> Result<(), Box<dyn std::error::Er
         let incoming = async {
             let connection = server.accept().await.ok_or("server closed")?.await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                peri_transport::accept(connection, &published).await?,
+                peri_internal_comparison::accept(connection, &published).await?,
             )
         };
         let outgoing = async {
             let connection = client.connect(server.local_addr()?, "localhost")?.await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                peri_transport::connect(connection, received.clone()).await?,
+                peri_internal_comparison::connect(connection, received.clone()).await?,
             )
         };
         let (publisher, subscriber) = tokio::try_join!(incoming, outgoing)?;
@@ -155,7 +155,7 @@ async fn native_moqt22_delivers_an_object() -> Result<(), Box<dyn std::error::Er
                 for frame in frames_in_group {
                     group.write_frame(
                         moq::Timestamp::from_micros(frame.timestamp_us)?,
-                        peri_transport::media_interop::encode_frame(frame, &catalog)?,
+                        peri_internal_comparison::media_interop::encode_frame(frame, &catalog)?,
                     )?;
                 }
                 group.finish()?;
@@ -164,7 +164,7 @@ async fn native_moqt22_delivers_an_object() -> Result<(), Box<dyn std::error::Er
                     if delivered.len() >= frames.len() {
                         return Err("too many media frames".into());
                     }
-                    let restored = peri_transport::media_interop::decode_frame(
+                    let restored = peri_internal_comparison::media_interop::decode_frame(
                         received.payload.as_ref(),
                         &catalog,
                     )
@@ -190,16 +190,17 @@ async fn native_moqt22_delivers_an_object() -> Result<(), Box<dyn std::error::Er
                 }
                 writer.finish()?;
             }
-            let encoded = peri_transport::media_interop::encode_frame(&frames[0], &catalog)?;
+            let encoded =
+                peri_internal_comparison::media_interop::encode_frame(&frames[0], &catalog)?;
             let mut trailing = encoded.clone();
             trailing.push(0);
             assert!(
-                peri_transport::media_interop::decode_frame(&trailing, &catalog)
+                peri_internal_comparison::media_interop::decode_frame(&trailing, &catalog)
                     .await
                     .is_err()
             );
             assert!(
-                peri_transport::media_interop::decode_frame(
+                peri_internal_comparison::media_interop::decode_frame(
                     &encoded[..encoded.len() - 1],
                     &catalog
                 )
@@ -209,19 +210,19 @@ async fn native_moqt22_delivers_an_object() -> Result<(), Box<dyn std::error::Er
             let mut bad = encoded.clone();
             bad[20] ^= 1;
             assert!(
-                peri_transport::media_interop::decode_frame(&bad, &catalog)
+                peri_internal_comparison::media_interop::decode_frame(&bad, &catalog)
                     .await
                     .is_err()
             );
             let mut oversized = encoded;
             oversized[21..25].copy_from_slice(&u32::MAX.to_be_bytes());
             assert!(
-                peri_transport::media_interop::decode_frame(&oversized, &catalog)
+                peri_internal_comparison::media_interop::decode_frame(&oversized, &catalog)
                     .await
                     .is_err()
             );
             // 在真实MoQT链路上让旧组停在半帧，再验证并发接收新组。
-            use peri_transport::media_interop::{LiveEvent, LiveLimits, LiveReceiver};
+            use peri_internal_comparison::media_interop::{LiveEvent, LiveLimits, LiveReceiver};
             let mut live = LiveReceiver::new(reader, catalog.clone(), 1, LiveLimits::default())?;
             let mut stalled_group = track.append_group()?;
             let stalled = stalled_group.create_frame(moq::frame::Info {
@@ -234,7 +235,7 @@ async fn native_moqt22_delivers_an_object() -> Result<(), Box<dyn std::error::Er
             let mut next_group = track.append_group()?;
             next_group.write_frame(
                 moq::Timestamp::from_micros(fresh.timestamp_us)?,
-                peri_transport::media_interop::encode_frame(&fresh, &catalog)?,
+                peri_internal_comparison::media_interop::encode_frame(&fresh, &catalog)?,
             )?;
             next_group.finish()?;
             let packet = tokio::time::timeout(Duration::from_secs(1), async {

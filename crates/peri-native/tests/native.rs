@@ -843,7 +843,7 @@ async fn recovery_skips_stalled_dependency_without_waiting_for_payload() -> Resu
     Ok(())
 }
 
-/// 同一AV1夹具通过原生PERI传输，输出交给与MoQ相同的外部解码校验。
+/// 同一AV1夹具通过原生PERI传输，输出交给共用的外部解码校验。
 #[tokio::test]
 #[ignore = "由native:interop:check提供AV1夹具和输出位置"]
 async fn shared_av1_fixture_crosses_native() -> Result<(), TestError> {

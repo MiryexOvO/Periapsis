@@ -1,4 +1,4 @@
-use peri_transport::{ALPN, moq};
+use peri_internal_comparison::{ALPN, moq};
 use std::{sync::Arc, time::Duration};
 use web_transport_quinn::quinn;
 
@@ -49,13 +49,13 @@ async fn round(mode: Scenario) -> Result<(), Box<dyn std::error::Error + Send + 
         let incoming = async {
             let connection = server.accept().await.ok_or("server closed")?.await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                peri_transport::duplex(connection, published.clone(), true).await?,
+                peri_internal_comparison::duplex(connection, published.clone(), true).await?,
             )
         };
         let outgoing = async {
             let connection = client.connect(server.local_addr()?, "localhost")?.await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                peri_transport::duplex(connection, received.clone(), false).await?,
+                peri_internal_comparison::duplex(connection, received.clone(), false).await?,
             )
         };
         let (publisher, subscriber) = tokio::try_join!(incoming, outgoing)?;
@@ -69,7 +69,7 @@ async fn round(mode: Scenario) -> Result<(), Box<dyn std::error::Error + Send + 
             extensions: vec![],
         };
         if matches!(mode, Scenario::Missing) {
-            let result = peri_transport::peer::negotiate(
+            let result = peri_internal_comparison::peer::negotiate(
                 subscriber,
                 &received,
                 peri_session::handshake::Role::Initiator,
@@ -89,7 +89,7 @@ async fn round(mode: Scenario) -> Result<(), Box<dyn std::error::Error + Send + 
             remote_hello.codecs = vec!["video/av1".into()];
         }
         let (publisher, subscriber) = tokio::join!(
-            peri_transport::peer::negotiate(
+            peri_internal_comparison::peer::negotiate(
                 publisher,
                 &published,
                 peri_session::handshake::Role::Responder,
@@ -97,7 +97,7 @@ async fn round(mode: Scenario) -> Result<(), Box<dyn std::error::Error + Send + 
                 remote_hello,
                 Duration::from_secs(1)
             ),
-            peri_transport::peer::negotiate(
+            peri_internal_comparison::peer::negotiate(
                 subscriber,
                 &received,
                 peri_session::handshake::Role::Initiator,
