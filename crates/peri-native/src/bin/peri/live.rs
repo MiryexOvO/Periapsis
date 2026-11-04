@@ -91,6 +91,7 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
             };
             let switching = rate != applied_rate;
             let force = recovery || switching;
+            peri_native::trace("source_input", serde_json::json!({"sequence":index+1}));
             let encoding_started = std::time::Instant::now();
             let exchange = async {
                 input.write_u64(index).await?;
@@ -118,7 +119,7 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
                 applied_rate = rate;
                 peri_native::trace(
                     "encoder_response",
-                    serde_json::json!({"request":request,"sequence":index+1,"target_bps":applied_rate,"request_wait_ms":request.map(|_|request_at.elapsed().as_millis()),"encoding_ms":encoding_started.elapsed().as_millis(),"switching":switching,"policy":if coalesced {"coalesced"} else {"legacy"}}),
+                    serde_json::json!({"request":request,"sequence":index+1,"target_bps":applied_rate,"bytes":payload.len(),"request_wait_ms":request.map(|_|request_at.elapsed().as_millis()),"encoding_ms":encoding_started.elapsed().as_millis(),"switching":switching,"policy":if coalesced {"coalesced"} else {"legacy"}}),
                 );
                 request = None;
                 pending = false;

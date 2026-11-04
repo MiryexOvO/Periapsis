@@ -1,6 +1,25 @@
 //! Experimental PERI native subscriber/publisher over QUIC.
-//! 实验原生 PERI 发布订阅：独立 ALPN、控制封装和对象流，不提供公网鉴权。
+//! 实验原生 PERI 发布订阅：独立 ALPN、控制封装、对象流与角色凭据 API。
 
+//!
+//! Third-party publishers provide encoded media through public types. The caller owns
+//! capture, encoding and the authenticated QUIC connection; the library owns framing.
+//! ```no_run
+//! use peri_native::{Error, Session, media::{Catalog, Frame, Publisher}};
+//! use std::time::Duration;
+//! async fn publish_encoded(session: Session, catalog: Catalog, frames: Vec<Frame>) -> Result<(), Error> {
+//!     let publisher = Publisher::new(session, catalog, Duration::from_secs(5)).await?;
+//!     for frame in frames {
+//!         if let Some(request) = publisher.poll_recovery()? {
+//!             // An application should route this request to its own encoder.
+//!             let _requested_track = request.track;
+//!         }
+//!         let _receiver_status = publisher.poll_report()?;
+//!         publisher.send(&frame, Duration::from_millis(300)).await?;
+//!     }
+//!     Ok(())
+//! }
+//! ```
 pub mod adaptation;
 pub mod auth;
 pub mod av1;

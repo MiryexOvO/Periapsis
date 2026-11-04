@@ -240,6 +240,7 @@ impl Relay {
                         match result {
                             Ok(()) => {},
                             Err(Error::Timeout | Error::ObjectAborted) => {
+                                crate::trace("relay_send_failed", serde_json::json!({"viewer":id,"track":track,"sequence":sequence}));
                                 // A late failure from an older GOP must not invalidate a newer keyframe.
                                 if recovery_points.get(&track).is_none_or(|key| *key <= sequence) {
                                     forwarded.retain(|(_, id)| *id != track);
@@ -261,11 +262,21 @@ impl Relay {
                     .all(|id| forwarded.contains(&(*id, frame.track)));
                 let now = Instant::now();
                 if deadline <= now || !ready || sends.len() >= 4 {
+                    crate::trace(
+                        "relay_drop",
+                        serde_json::json!({"viewer":id,"sequence":frame.sequence,"key":frame.kind == FrameKind::Key,"bytes":frame.payload.len(),"reason":if deadline <= now {"expired"} else if !ready {"dependency"} else {"inflight_limit"}}),
+                    );
                     if frame.kind != FrameKind::Disposable {
                         forwarded.retain(|(_, track)| *track != frame.track);
                         self.request_recovery(frame.track);
                     }
                     continue;
+                }
+                if frame.kind == FrameKind::Key {
+                    crate::trace(
+                        "relay_key_send",
+                        serde_json::json!({"viewer":id,"sequence":frame.sequence,"bytes":frame.payload.len(),"budget_ms":(deadline-now).as_millis()}),
+                    );
                 }
                 match publisher.start_send(frame, deadline - now).await {
                     Ok(send) => {
@@ -277,6 +288,10 @@ impl Relay {
                         }
                     }
                     Err(Error::Timeout | Error::ObjectAborted) => {
+                        crate::trace(
+                            "relay_start_failed",
+                            serde_json::json!({"viewer":id,"sequence":frame.sequence}),
+                        );
                         forwarded.retain(|(_, id)| *id != frame.track);
                         self.request_recovery(frame.track);
                         continue;
