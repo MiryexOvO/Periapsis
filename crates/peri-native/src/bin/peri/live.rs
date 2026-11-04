@@ -12,8 +12,14 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
     if !(1..=13500).contains(&count) {
         return Err("live count must be 1..13500".into());
     }
+    let coalesced = match std::env::var("PERI_SWITCH_POLICY").as_deref() {
+        Ok("coalesced") => true,
+        Ok("legacy") | Err(_) => false,
+        _ => return Err("PERI_SWITCH_POLICY must be legacy or coalesced".into()),
+    };
     let mut command =
         Command::new(std::env::var("PERI_PYTHON").unwrap_or_else(|_| "python".into()));
+    command.env("PERI_ENCODER_POOL", if coalesced { "1" } else { "0" });
     command
         .arg(&args[4])
         .kill_on_drop(true)
@@ -57,6 +63,7 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
         let mut applied_rate = 300000u32;
         let mut request: Option<peri_native::RecoveryRequest> = None;
         let mut request_at = std::time::Instant::now();
+        let mut schedule = peri_native::adaptation::SwitchSchedule::default();
         let mut pending = false;
         let mut last_forced: Option<u64> = None;
         for index in 0..count {
@@ -74,18 +81,21 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
                     desired_rate = rate;
                 }
             }
-            if desired_rate != applied_rate {
-                pending = true;
-            }
-            // Coalesce requests: at most one forced recovery frame per second.
-            let force = pending && last_forced.is_none_or(|last| index - last >= 15);
+            let recovery = pending && last_forced.is_none_or(|last| index - last >= 15);
+            let rate = if coalesced {
+                schedule.rate_for(index, applied_rate, desired_rate, recovery)
+            } else if last_forced.is_none_or(|last| index - last >= 15) {
+                desired_rate
+            } else {
+                applied_rate
+            };
+            let switching = rate != applied_rate;
+            let force = recovery || switching;
             let encoding_started = std::time::Instant::now();
             let exchange = async {
                 input.write_u64(index).await?;
                 input.write_u8(u8::from(force)).await?;
-                input
-                    .write_u32(if force { desired_rate } else { applied_rate })
-                    .await?;
+                input.write_u32(rate).await?;
                 input.flush().await?;
                 let size = output.read_u32().await? as usize;
                 let pts = output.read_u64().await?;
@@ -103,22 +113,34 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
                 Ok::<_, Error>((key == 1, payload))
             };
             let (key, payload) = tokio::time::timeout(Duration::from_secs(2), exchange).await??;
+            schedule.encoded(index, key, switching);
             if force {
-                applied_rate = desired_rate;
+                applied_rate = rate;
                 peri_native::trace(
                     "encoder_response",
-                    serde_json::json!({"request":request,"sequence":index+1,"target_bps":applied_rate,"request_wait_ms":request.map(|_|request_at.elapsed().as_millis()),"encoding_ms":encoding_started.elapsed().as_millis()}),
+                    serde_json::json!({"request":request,"sequence":index+1,"target_bps":applied_rate,"request_wait_ms":request.map(|_|request_at.elapsed().as_millis()),"encoding_ms":encoding_started.elapsed().as_millis(),"switching":switching,"policy":if coalesced {"coalesced"} else {"legacy"}}),
                 );
                 request = None;
                 pending = false;
+                if recovery {
+                    println!("PERI_KEYFRAME_RESPONSE {} {}", index + 1, payload.len());
+                }
+                if switching {
+                    println!(
+                        "PERI_RATE_SWITCH {} {} {}",
+                        index + 1,
+                        applied_rate,
+                        payload.len()
+                    );
+                }
                 last_forced = Some(index);
-                println!("PERI_KEYFRAME_RESPONSE {} {}", index + 1, payload.len());
             }
             println!(
-                "PERI_ENCODED {} {} {}",
+                "PERI_ENCODED {} {} {} {}",
                 index + 1,
                 payload.len(),
-                applied_rate
+                applied_rate,
+                encoding_started.elapsed().as_micros()
             );
             let frame = Frame {
                 track: 1,

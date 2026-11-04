@@ -4,13 +4,17 @@ from fractions import Fraction
 import av
 
 target_rate = int(os.environ.get('PERI_TEST_BITRATE','300000'))
-codec = av.CodecContext.create('libaom-av1', 'w')
-codec.width, codec.height, codec.pix_fmt = 320, 180, 'yuv420p'
-codec.time_base = Fraction(1, 15)
-codec.framerate = Fraction(15, 1)
-codec.bit_rate, codec.gop_size, codec.thread_count = target_rate, 60, 1
-codec.options = {'usage': 'realtime', 'cpu-used': '8', 'lag-in-frames': '0', 'auto-alt-ref': '0'}
-codec.open()
+def make_codec(rate):
+    context=av.CodecContext.create('libaom-av1','w')
+    context.width,context.height,context.pix_fmt=320,180,'yuv420p'
+    context.time_base,context.framerate=Fraction(1,15),Fraction(15,1)
+    context.bit_rate,context.gop_size,context.thread_count=rate,60,1
+    context.options={'usage':'realtime','cpu-used':'8','lag-in-frames':'0','auto-alt-ref':'0'}
+    context.open()
+    return context
+pool={rate:make_codec(rate) for rate in (100000,150000,225000,300000)} if os.environ.get('PERI_ENCODER_POOL')=='1' else None
+codec=pool[target_rate] if pool is not None else make_codec(target_rate)
+
 
 def make_frame(index):
     frame = av.VideoFrame(320, 180, 'yuv420p')
@@ -35,7 +39,33 @@ def encode(index, force):
         raise RuntimeError('encoder did not honor keyframe request')
     return bool(packet.is_keyframe), bytes(packet)
 
-if len(sys.argv) == 3 and sys.argv[1] == '--check':
+def exchange(index,force,bitrate):
+    global codec,target_rate
+    if force not in (0,1) or not 100000<=bitrate<=300000: raise RuntimeError('request bounds')
+    if bitrate!=target_rate and not force: raise RuntimeError('rate transition must be independent')
+    if pool is not None:
+        if bitrate not in pool: raise RuntimeError('unsupported pool rate')
+        for rate,context in pool.items():
+            codec=context
+            packet=encode(index,bool(force) and rate==bitrate)
+            if rate==bitrate: selected=packet
+        target_rate=bitrate
+        return selected
+    if bitrate!=target_rate: codec=make_codec(bitrate);target_rate=bitrate
+    return encode(index,bool(force))
+
+if len(sys.argv)==3 and sys.argv[1]=='--pool-check':
+    if pool is None: raise RuntimeError('pool check needs PERI_ENCODER_POOL=1')
+    with open(sys.argv[2],'xb') as output:
+        output.write(struct.pack('<4sHH4sHHIIII',b'DKIF',0,32,b'AV01',320,180,15,1,90,0))
+        for index in range(90):
+            rate=(300000,225000,150000,100000,300000,300000)[index//15]
+            force=index in (0,15,30,45,60)
+            key,data=exchange(index,force,rate)
+            if force and not key: raise RuntimeError('missing pool key')
+            output.write(struct.pack('<IQ',len(data),index)+data)
+    print('POOL_CHECK frames=90 switches=4 contexts=4')
+elif len(sys.argv) == 3 and sys.argv[1] == '--check':
     with open(sys.argv[2], 'xb') as output:
         output.write(struct.pack('<4sHH4sHHIIII', b'DKIF', 0, 32, b'AV01', 320, 180, 15, 1, 30, 0))
         raw = open(sys.argv[2] + ".yuv", "xb")
@@ -57,18 +87,7 @@ else:
         if not request: break
         if len(request) != 13: raise RuntimeError('truncated request')
         index, force, bitrate = struct.unpack('>QBI', request)
-        if not 100000 <= bitrate <= 300000: raise RuntimeError('bitrate bounds')
-        if bitrate != target_rate:
-            if not force: raise RuntimeError('rate transition must be independent')
-            codec = av.CodecContext.create('libaom-av1', 'w')
-            codec.width, codec.height, codec.pix_fmt = 320, 180, 'yuv420p'
-            codec.time_base, codec.framerate = Fraction(1,15), Fraction(15,1)
-            codec.bit_rate, codec.gop_size, codec.thread_count = bitrate, 60, 1
-            codec.options = {'usage':'realtime','cpu-used':'8','lag-in-frames':'0','auto-alt-ref':'0'}
-            codec.open()
-            target_rate = bitrate
-        if force not in (0, 1): raise RuntimeError('invalid force flag')
-        key, data = encode(index, bool(force))
+        key,data=exchange(index,force,bitrate)
         if not 0 < len(data) <= 1024 * 1024 - 68: raise RuntimeError('packet bounds')
         sys.stdout.buffer.write(struct.pack('>IQB', len(data), index, key) + data)
         sys.stdout.buffer.flush()

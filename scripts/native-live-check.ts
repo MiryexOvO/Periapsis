@@ -68,6 +68,9 @@ try {
   const encoded = resolve(directory, "encoder.ivf");
   await run(process.env.PERI_PYTHON ?? "python", [resolve(root, "scripts/live-av1-worker.py"), "--check", encoded]);
   if ((await decoded(encoded)).length !== 30) throw new Error("live encoder decode mismatch");
+  const pooled=resolve(directory,"pooled.ivf");
+  await run(process.env.PERI_PYTHON ?? "python",[resolve(root,"scripts/live-av1-worker.py"),"--pool-check",pooled],{...environment,PERI_ENCODER_POOL:"1"});
+  if((await decoded(pooled)).length!==90) throw new Error("pool switch decode failed");
   const quality=[];
   for (const target of [300000,100000]) {
     const path=resolve(directory,`quality-${target}.ivf`);
@@ -87,14 +90,14 @@ try {
   const proxyReports = [];
   const repeats = Number(process.env.PERI_NETWORK_REPEATS ?? "3");
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 5) throw new Error("PERI_NETWORK_REPEATS must be 1..5");
-  for (let round = 1; round <= repeats; round++) for (const mode of round % 2 ? ["fixed", "adaptive"] : ["adaptive", "fixed"]) {
+  for (let round = 1; round <= repeats; round++) for (const mode of Array.from({length:3},(_,i)=>["fixed","legacy","coalesced"][(i+round-1)%3]!)) {
     const ended = server.state.output.split("PERI_RESOURCE_ENDED").length - 1;
     publisher.child.kill(); await finish(publisher);
     await waitFor(server,"PERI_RESOURCE_ENDED", ended+1);
     const ready = server.state.output.split("PERI_RESOURCE_READY").length - 1;
     // Resource teardown can follow process exit by one event-loop turn.
     await new Promise(resolve => setTimeout(resolve,100));
-    publisher = start(binary,publishArgs,{...environment,PERI_ADAPTIVE:mode==="adaptive" ? "1":"0"}); children.push(publisher);
+    publisher = start(binary,publishArgs,{...environment,PERI_ADAPTIVE:mode!=="fixed" ? "1":"0",PERI_SWITCH_POLICY:mode==="coalesced" ? "coalesced":"legacy"}); children.push(publisher);
     await waitFor(server,"PERI_RESOURCE_READY",ready+1).catch(error=>{throw new Error(`${publisher.state.output}\n${error}`)});
     const traceStart=Date.now();
     const downstream = dgram.createSocket("udp4"), upstream = dgram.createSocket("udp4");
@@ -123,13 +126,13 @@ try {
       if (await finish(viewer, 30000) !== 0) throw new Error(`Impaired playback failed: ${viewer.state.output}`);
       const summary = JSON.parse(viewer.state.output.match(/PERI_PLAY_DONE (.+)/)![1]!);
       if (summary.decoded !== 60 || summary.reconnects !== 0 || lost === 0) throw new Error(`Live recovery regression: ${JSON.stringify(summary)}, dropped UDP packets: ${lost}`);
-      const rates=[...publisher.state.output.matchAll(/PERI_ENCODED (\d+) (\d+) (\d+)/g)].map(match=>({sequence:Number(match[1]),bytes:Number(match[2]),target:Number(match[3])}));
+      const rates=[...publisher.state.output.matchAll(/PERI_ENCODED (\d+) (\d+) (\d+) (\d+)/g)].map(match=>({sequence:Number(match[1]),bytes:Number(match[2]),target:Number(match[3]),encodeUs:Number(match[4])}));
       const phases=publisher.state.output.split(/\r?\n/).filter(line=>line.startsWith("PERI_TRACE"));
       const traces=[...phases,...viewer.state.output.split(/\r?\n/),...server.state.output.split(/\r?\n/)]
         .filter(line=>line.startsWith("PERI_TRACE ")).map(line=>JSON.parse(line.slice(11))).filter(event=>event.wall_ms>=traceStart).sort((a,b)=>a.wall_ms-b.wall_ms);
       await writeFile(resolve(directory,`trace-${round}-${mode}.jsonl`),traces.map(event=>JSON.stringify(event)).join("\n")+"\n");
       if (!phases.some(line=>line.includes('source_report'))) throw new Error("receiver telemetry did not reach encoder");
-      proxyReports.push({ round, mode, targets:[...new Set(rates.map(rate=>rate.target))], encodedBytes:rates.reduce((total,rate)=>total+rate.bytes,0), profile: { downstreamBytesPerSecond: 24000, delayMs: 45, durationMs: 2000, dropEvery: 11, blackoutStartMs: 300, blackoutDurationMs: 180 }, packets, lost, wireBytes, trialMs:Math.round(performance.now()-started), peakQueuedDatagrams: peak, ...summary });
+      proxyReports.push({ round, mode, targets:[...new Set(rates.map(rate=>rate.target))], rateSwitches:publisher.state.output.split("PERI_RATE_SWITCH").length-1, encodeMeanUs:Math.round(rates.reduce((total,rate)=>total+rate.encodeUs,0)/rates.length),encodeP95Us:rates.map(rate=>rate.encodeUs).sort((a,b)=>a-b)[Math.floor((rates.length-1)*0.95)], encodedBytes:rates.reduce((total,rate)=>total+rate.bytes,0), profile: { downstreamBytesPerSecond: 24000, delayMs: 45, durationMs: 2000, dropEvery: 11, blackoutStartMs: 300, blackoutDurationMs: 180 }, packets, lost, wireBytes, trialMs:Math.round(performance.now()-started), peakQueuedDatagrams: peak, ...summary });
     } finally { for (const timer of timers) clearTimeout(timer); downstream.close(); upstream.close(); }
   }
   await writeFile(resolve(directory, "network-report.json"), JSON.stringify(proxyReports, null, 2));

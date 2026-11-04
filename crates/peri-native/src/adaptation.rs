@@ -116,3 +116,58 @@ mod tests {
         assert_eq!(controller.rate, 300000);
     }
 }
+
+/// Coalesce target changes into recovery or predicted natural-keyframe slots.
+#[derive(Default)]
+pub struct SwitchSchedule {
+    last_key: Option<u64>,
+    last_switch: Option<u64>,
+}
+impl SwitchSchedule {
+    pub fn rate_for(&self, frame: u64, applied: u32, desired: u32, recovery: bool) -> u32 {
+        let desired = match desired {
+            0..=149999 => 100000,
+            150000..=224999 => 150000,
+            225000..=299999 => 225000,
+            _ => 300000,
+        };
+        let due = self
+            .last_key
+            .is_none_or(|key| frame.saturating_sub(key) >= 60);
+        let cooled = self
+            .last_switch
+            .is_none_or(|at| frame.saturating_sub(at) >= 45);
+        if desired != applied && cooled && (recovery || due) {
+            desired
+        } else {
+            applied
+        }
+    }
+    pub fn encoded(&mut self, frame: u64, key: bool, switched: bool) {
+        if key {
+            self.last_key = Some(frame);
+        }
+        if switched {
+            self.last_switch = Some(frame);
+        }
+    }
+}
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+    #[test]
+    fn rate_only_changes_wait_and_merge_with_recovery() {
+        let mut s = SwitchSchedule::default();
+        s.encoded(0, true, false);
+        for frame in 1..60 {
+            assert_eq!(s.rate_for(frame, 300000, 225000, false), 300000);
+        }
+        assert_eq!(s.rate_for(60, 300000, 225000, false), 225000);
+        assert_eq!(s.rate_for(15, 300000, 168750, true), 150000);
+        s.encoded(15, true, true);
+        assert_eq!(s.rate_for(30, 150000, 126562, true), 150000);
+        assert_eq!(s.rate_for(60, 150000, 126562, true), 100000);
+        assert_eq!(s.rate_for(60, 150000, 126562, false), 150000);
+        assert_eq!(s.rate_for(75, 150000, 126562, false), 100000);
+    }
+}
