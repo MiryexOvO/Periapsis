@@ -28,10 +28,16 @@ pub struct Decoder {
     input: ChildStdin,
     output: ChildStdout,
     pixels: Vec<u8>,
+    // 进入一次解码即置为false；取消/错误后保持不可复用，避免像素与帧号错配。
+    ready: bool,
+    trace: bool,
+    started: Instant,
 }
 impl Decoder {
     /// 启动固定单线程AV1解码，最多1080p；进程释放时自动终止。
     pub async fn new(track: &Track) -> Result<Self, DecodeError> {
+        let started = Instant::now();
+        let trace = std::env::var("PERI_DECODER_TRACE").as_deref() == Ok("1");
         let width = track.width.ok_or("width")?;
         let height = track.height.ok_or("height")?;
         if track.codec != "video/av1"
@@ -82,13 +88,22 @@ impl Decoder {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
+        if trace {
+            eprintln!("PERI_DECODER spawn_us={}", started.elapsed().as_micros());
+        }
         let mut input = child.stdin.take().ok_or("decoder stdin")?;
         let header = IvfWriter::new(Cursor::new(Vec::new()), track.clone())?
             .finish()?
             .into_inner();
         input.write_all(&header).await?;
+        if trace {
+            eprintln!("PERI_DECODER header_us={}", started.elapsed().as_micros());
+        }
         let output = child.stdout.take().ok_or("decoder stdout")?;
         Ok(Self {
+            ready: true,
+            trace,
+            started,
             child,
             input,
             output,
@@ -97,8 +112,21 @@ impl Decoder {
     }
     /// 输入须先通过媒体校验；调用方必须设置超时，失败后不能复用半帧管道。
     pub async fn decode(&mut self, frame: &Frame) -> Result<(), DecodeError> {
+        if !self.ready {
+            return Err("decoder requires restart after interrupted frame".into());
+        }
+        self.ready = false;
         // 输入与输出并行推进，避免子进程输出管道写满时反过来阻塞输入。
         // 取消任一方向后仍须停止并重建解码器，不能继续使用半帧状态。
+        let trace = self.trace;
+        let started = self.started;
+        let sequence = frame.sequence;
+        if trace {
+            eprintln!(
+                "PERI_DECODER begin sequence={sequence} us={}",
+                started.elapsed().as_micros()
+            );
+        }
         let input = &mut self.input;
         let output = &mut self.output;
         let pixels = &mut self.pixels;
@@ -109,9 +137,48 @@ impl Decoder {
             input.write_all(&frame.timestamp_us.to_le_bytes()).await?;
             input.write_all(&frame.payload).await?;
             input.flush().await?;
+            if trace {
+                eprintln!(
+                    "PERI_DECODER written sequence={sequence} us={}",
+                    started.elapsed().as_micros()
+                );
+            }
             Ok::<(), std::io::Error>(())
         };
-        tokio::try_join!(write, output.read_exact(pixels))?;
+        let read = async {
+            // 按块追踪首字节与完整帧的耗时，同时明确拒绝半帧EOF。
+            let mut count = 0;
+            let mut chunks = 0;
+            while count < pixels.len() {
+                let size = output.read(&mut pixels[count..]).await?;
+                if size == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "decoder output ended inside frame",
+                    ));
+                }
+                count += size;
+                chunks += 1;
+                if trace && chunks == 1 {
+                    eprintln!(
+                        "PERI_DECODER first_chunk sequence={sequence} bytes={size} us={}",
+                        started.elapsed().as_micros()
+                    );
+                }
+            }
+            if trace {
+                eprintln!("PERI_DECODER chunks sequence={sequence} count={chunks}");
+            }
+            if trace {
+                eprintln!(
+                    "PERI_DECODER pixels sequence={sequence} us={}",
+                    started.elapsed().as_micros()
+                );
+            }
+            Ok::<_, std::io::Error>(count)
+        };
+        tokio::try_join!(write, read)?;
+        self.ready = true;
         Ok(())
     }
     /// 最近一次成功解码的RGB像素；不代表已经呈现到物理屏幕。
@@ -120,6 +187,7 @@ impl Decoder {
     }
     /// 终止并回收子进程，恢复参考链时应重新创建解码器。
     pub async fn stop(&mut self) {
+        self.ready = false;
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
     }
