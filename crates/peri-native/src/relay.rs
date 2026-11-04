@@ -56,7 +56,8 @@ pub struct Relay {
     catalog: Catalog,
     limits: Limits,
     state: Mutex<State>,
-    requests: Mutex<Vec<u16>>,
+    requests: Mutex<Vec<crate::RecoveryRequest>>,
+    report: Mutex<Option<crate::ReceiverReport>>,
 }
 struct Registration<'a> {
     relay: &'a Relay,
@@ -104,6 +105,7 @@ impl Relay {
             catalog,
             limits,
             requests: Mutex::new(Vec::new()),
+            report: Mutex::new(None),
             state: Mutex::new(State {
                 viewers: HashMap::new(),
                 next_id: 0,
@@ -131,8 +133,19 @@ impl Relay {
         let _guard = IngestGuard(self);
         loop {
             let requests = std::mem::take(&mut *self.requests.lock().expect("requests"));
-            for track in requests {
-                source.request_keyframe(track).await?;
+            for request in requests {
+                crate::trace("relay_recovery", request);
+                source.forward_recovery(request).await?;
+            }
+            let report = self.report.lock().expect("report").take();
+            if let Some(report) = report {
+                let sole = {
+                    let state = self.state.lock().expect("relay lock");
+                    state.viewers.len() == 1 && state.viewers.contains_key(&report.viewer)
+                };
+                if sole {
+                    source.send_report(report).await?;
+                }
             }
             self.push(source.recv(idle_budget).await?, Instant::now())?;
         }
@@ -210,11 +223,15 @@ impl Relay {
             let mut sends = tokio::task::JoinSet::new();
             let mut recovery_points = HashMap::<u16, u64>::new();
             loop {
-                if let Some(track) = publisher.poll_keyframe_request()? {
+                if let Some(request) = publisher.poll_recovery()? {
                     let mut requests = self.requests.lock().expect("requests");
-                    if !requests.contains(&track) && requests.len() < 8 {
-                        requests.push(track);
+                    if !requests.iter().any(|r| r.track == request.track) && requests.len() < 8 {
+                        requests.push(request);
                     }
+                }
+                if let Some(mut report) = publisher.poll_report()? {
+                    report.viewer = id;
+                    *self.report.lock().expect("report") = Some(report);
                 }
                 let item = tokio::select! {
                     biased;
@@ -288,8 +305,8 @@ impl Relay {
             .any(|entry| entry.id == track && entry.kind == crate::media::TrackKind::Video)
         {
             let mut requests = self.requests.lock().expect("requests");
-            if !requests.contains(&track) && requests.len() < 8 {
-                requests.push(track);
+            if !requests.iter().any(|r| r.track == track) && requests.len() < 8 {
+                requests.push(crate::RecoveryRequest::new(track));
             }
         }
     }

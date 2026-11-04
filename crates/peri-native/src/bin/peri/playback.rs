@@ -157,8 +157,34 @@ struct Stats {
     reconnects: u32,
     last: Option<Instant>,
     max_gap: u128,
+    freeze_ms: u128,
+    played_sequence: u64,
+    media_us: u64,
     max_lag: u128,
     lateness: Vec<u128>,
+}
+
+async fn report_gap(
+    subscriber: &Subscriber,
+    track: u16,
+    buffer: &DecodeBuffer,
+    stats: &Stats,
+) -> Result<(), Error> {
+    subscriber
+        .send_report(peri_native::ReceiverReport {
+            track,
+            viewer: 0,
+            sample: 1,
+            sequence: stats.played_sequence,
+            media_us: stats.media_us,
+            buffered_ms: buffer.buffered_ms(),
+            queued_bytes: buffer.queued_bytes() as u32,
+            lateness_ms: 0,
+            dropped: u64::from(stats.dropped),
+            recoveries: stats.recoveries,
+        })
+        .await?;
+    Ok(())
 }
 
 pub async fn play(args: &[String]) -> Result<(), Error> {
@@ -201,7 +227,7 @@ pub async fn play(args: &[String]) -> Result<(), Error> {
             serde_json::json!({
                 "decoded": stats.decoded, "dropped": stats.dropped, "recoveries": stats.recoveries,
                 "reconnects": stats.reconnects, "max_gap_ms": stats.max_gap,
-                "max_lateness_ms": stats.max_lag, "p50_lateness_ms": percentile(50), "p95_lateness_ms": percentile(95)
+                "max_lateness_ms": stats.max_lag, "freeze_ms":stats.freeze_ms, "p50_lateness_ms": percentile(50), "p95_lateness_ms": percentile(95)
             })
         );
         Ok::<_, Error>(())
@@ -288,23 +314,32 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 None => {
                     stats.dropped += 1;
                     subscriber.request_keyframe(track.id).await?;
+                    report_gap(&subscriber, track.id, &buffer, stats).await?;
                     if !waiting_key {
                         buffer.recover(track.id);
                         waiting_key = true;
                         stats.recoveries += 1;
                         subscriber.request_keyframe(track.id).await?;
+                        report_gap(&subscriber, track.id, &buffer, stats).await?;
                         decoder.stop().await;
                         decoder = Decoder::new(&track).await?;
                     }
                     continue;
                 }
             };
+            if frame.kind == FrameKind::Key {
+                peri_native::trace(
+                    "key_received",
+                    serde_json::json!({"sequence":frame.sequence}),
+                );
+            }
             if frame.track != track.id {
                 continue;
             }
             if waiting_key && frame.kind != FrameKind::Key {
                 if stats.recoveries > 0 {
                     subscriber.request_keyframe(track.id).await?;
+                    report_gap(&subscriber, track.id, &buffer, stats).await?;
                 }
                 stats.dropped += 1;
                 continue;
@@ -329,6 +364,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 stats.recoveries += 1;
                 stats.dropped += 1;
                 subscriber.request_keyframe(track.id).await?;
+                report_gap(&subscriber, track.id, &buffer, stats).await?;
                 decoder.stop().await;
                 decoder = Decoder::new(&track).await?;
                 continue;
@@ -373,6 +409,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             waiting_key = true;
                             stats.recoveries += 1;
                             subscriber.request_keyframe(track.id).await?;
+                            report_gap(&subscriber, track.id, &buffer, stats).await?;
                             decoder.stop().await;
                             decoder = Decoder::new(&track).await?;
                             break;
@@ -381,10 +418,18 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             waiting_key = true;
                             stats.recoveries += 1;
                             subscriber.request_keyframe(track.id).await?;
+                            report_gap(&subscriber, track.id, &buffer, stats).await?;
                             decoder.stop().await;
                             decoder = Decoder::new(&track).await?;
                             break;
                         }
+                        if frame.kind == FrameKind::Key {
+                            peri_native::trace(
+                                "key_decoded",
+                                serde_json::json!({"sequence":frame.sequence,"media_us":frame.timestamp_us}),
+                            );
+                        }
+
                         if target > Instant::now() {
                             tokio::time::sleep_until(target.into()).await;
                         }
@@ -404,6 +449,10 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             .max_lag
                             .max(shown.saturating_duration_since(target).as_millis());
                         if let Some(last) = stats.last {
+                            let gap = shown.duration_since(last).as_millis();
+                            if gap > 250 {
+                                stats.freeze_ms += gap.saturating_sub(67);
+                            }
                             stats.max_gap =
                                 stats.max_gap.max(shown.duration_since(last).as_millis());
                         }
@@ -413,6 +462,25 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             .push(shown.saturating_duration_since(target).as_millis());
                         progress = shown;
                         stats.decoded += 1;
+                        stats.played_sequence = frame.sequence;
+                        stats.media_us = frame.timestamp_us;
+                        subscriber
+                            .send_report(peri_native::ReceiverReport {
+                                track: track.id,
+                                viewer: 0,
+                                sample: 1,
+                                sequence: frame.sequence,
+                                media_us: frame.timestamp_us,
+                                buffered_ms: buffer.buffered_ms(),
+                                queued_bytes: buffer.queued_bytes() as u32,
+                                lateness_ms: shown
+                                    .saturating_duration_since(target)
+                                    .as_millis()
+                                    .min(60000) as u32,
+                                dropped: u64::from(stats.dropped),
+                                recoveries: stats.recoveries,
+                            })
+                            .await?;
                         println!(
                             "PERI_FRAME {} {} {}",
                             frame.sequence,
@@ -426,6 +494,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                     Event::Recover { .. } => {
                         stats.recoveries += 1;
                         subscriber.request_keyframe(track.id).await?;
+                        report_gap(&subscriber, track.id, &buffer, stats).await?;
                         waiting_key = true;
                         decoder.stop().await;
                         decoder = Decoder::new(&track).await?;
