@@ -10,6 +10,124 @@ use support::pair;
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 const BUDGET: Duration = Duration::from_secs(3);
 
+/// 真实QUIC逐次省略每一片，验证协商后的分片精确保真与150ms本地重组预算。
+/// 这是应用层片丢失夹具，不是随机UDP丢包或正式Relay播放性能实验。
+#[tokio::test]
+async fn repair_single_erasure_crosses_negotiated_quic() -> Result<(), TestError> {
+    use peri_native::repair::{self, Admission, Codec, Fragment, Limits};
+    let pair = pair(ALPN).await?;
+    let mut offered = hello();
+    offered.extensions.push(repair::capability(true));
+    let (publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(
+            pair.incoming.clone(),
+            offered.clone(),
+            "live/repair",
+            BUDGET
+        ),
+        peri_native::subscribe(pair.outgoing.clone(), offered, "live/repair", BUDGET)
+    )?;
+    let codec = Codec::new(publisher.agreement().unwrap())?;
+    let mut assembler = Codec::new(subscriber.agreement().unwrap())?.assembler(Limits::default())?;
+    let mut max_elapsed = 0;
+    for omitted in 0..5 {
+        let sequence = omitted as u64 + 1;
+        let original = Object {
+            sequence,
+            timestamp_us: sequence * 66667,
+            duration_us: 66667,
+            independent: true,
+            payload: (0..2000)
+                .map(|i| ((i * i + 17 * i + sequence as usize) % 251) as u8)
+                .collect(),
+        };
+        let fragments = codec.split(&original, 512)?;
+        assert_eq!(fragments.len(), 5);
+        let selected: Vec<_> = fragments
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(index, _)| *index != omitted)
+            .map(|(index, f)| f.to_object(sequence * 100 + index as u64 + 1))
+            .collect::<Result<_, _>>()?;
+        let started = std::time::Instant::now();
+        let deadline = started + Duration::from_millis(150);
+        let send = async {
+            let mut pending = Vec::new();
+            for object in &selected {
+                pending.push(publisher.start_send(object, BUDGET).await?);
+            }
+            for receipt in pending {
+                receipt.finish().await?;
+            }
+            Ok::<_, TestError>(())
+        };
+        let receive = async {
+            let mut output = None;
+            for _ in 0..selected.len() {
+                let fragment = Fragment::from_object(subscriber.recv(BUDGET).await?)?;
+                if let Admission::Complete { object, repaired } =
+                    assembler.push(fragment, std::time::Instant::now(), deadline)?
+                {
+                    assert_eq!(repaired, omitted < 4);
+                    output = Some(object);
+                }
+            }
+            Ok::<_, TestError>(output)
+        };
+        let (_, got) = tokio::try_join!(send, receive)?;
+        max_elapsed = max_elapsed.max(started.elapsed().as_micros());
+        assert_eq!(got, Some(original));
+        assert_eq!(assembler.reserved_bytes(), 0);
+        let late = fragments[omitted].to_object(sequence * 100 + 99)?;
+        let (_, late) = tokio::try_join!(publisher.send(&late, BUDGET), subscriber.recv(BUDGET))?;
+        assert_eq!(
+            assembler.push(
+                Fragment::from_object(late)?,
+                std::time::Instant::now(),
+                std::time::Instant::now() + Duration::from_millis(150)
+            )?,
+            Admission::Stale
+        );
+    }
+    println!("PERI_REPAIR_FIXTURE cases=5 max_elapsed_us={max_elapsed} local_budget_ms=150");
+    Ok(())
+}
+
+#[tokio::test]
+async fn optional_repair_falls_back_and_required_repair_rejects_legacy_offer()
+-> Result<(), TestError> {
+    use peri_native::repair::{self, Codec};
+    for required in [false, true] {
+        let pair = pair(ALPN).await?;
+        let mut offered = hello();
+        offered.extensions.push(repair::capability(required));
+        let (sender, receiver) = tokio::join!(
+            peri_native::accept(pair.incoming.clone(), hello(), "live/repair", BUDGET),
+            peri_native::subscribe(pair.outgoing.clone(), offered, "live/repair", BUDGET)
+        );
+        if required {
+            assert!(sender.is_err());
+            assert!(receiver.is_err());
+            continue;
+        }
+        let sender = sender?;
+        let mut receiver = receiver?;
+        assert!(Codec::new(sender.agreement().unwrap()).is_err());
+        assert!(Codec::new(receiver.agreement().unwrap()).is_err());
+        let object = Object {
+            sequence: 1,
+            timestamp_us: 0,
+            duration_us: 66667,
+            independent: true,
+            payload: vec![42],
+        };
+        let (_, got) = tokio::try_join!(sender.send(&object, BUDGET), receiver.recv(BUDGET))?;
+        assert_eq!(got, object);
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn frequent_ack_requests_cross_real_quic_and_preserve_objects() -> Result<(), TestError> {
     let pair = support::pair_with_ack(ALPN, true).await?;

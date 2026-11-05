@@ -11,6 +11,7 @@
 |通用调度原型|crates/peri-scheduler|依赖、过期与队列计费|独立原型；原生媒体层未依赖该 crate|
 |原生会话/对象|crates/peri-native/src/lib.rs|ALPN、发布订阅、会话、独立流、取消、有界发送、连接传输统计|公共 Rust API；底层接口耦合 Quinn|
 |对象接收|crates/peri-native/src/receive.rs|流取消保护、四路恢复、四槽有序保留和期限诊断|内部模块；通过Session/Subscriber接入，四路及保留候选默认关闭|
+|对象修复内核|crates/peri-native/src/repair.rs|可选分片、单丢片恢复、SHA256、有界重组和额外字节预算|公共实验API；需协商及专用适配器，正式Relay/播放器尚未接入|
 |线格式|peri-native/src/wire.rs|有界控制消息和对象头/FIN 校验|内部模块；独立实现依据协议文档而非调用此模块|
 |媒体层|peri-native/src/media.rs|Catalog、Track、Frame、Publisher、Subscriber、DecodeBuffer|公共 Rust API；调用方提供编码数据和真实解码确认|
 |分发服务|peri-native/src/relay.rs|单资源接入、独立订阅队列、恢复与反馈转发|公共库；不是完整资源管理平台|
