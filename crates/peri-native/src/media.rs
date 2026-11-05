@@ -209,7 +209,8 @@ impl Frame {
 /// Publisher for the PERI media-01 payload profile.
 /// PERI media-01 负载配置发布端，目录必须先于媒体单元发送。
 pub struct Publisher {
-    session: Session,
+    session: std::sync::Arc<Session>,
+    repair: Option<crate::repair::transport::Sender>,
     catalog: Catalog,
 }
 impl Publisher {
@@ -242,14 +243,25 @@ impl Publisher {
                 budget,
             )
             .await?;
-        Ok(Self { session, catalog })
+        let repair = if session.agreement().is_some_and(|a| {
+            a.extensions
+                .iter()
+                .any(|e| e.id == crate::repair::EXTENSION_ID)
+        }) {
+            Some(crate::repair::transport::Sender::new(&session)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            session: std::sync::Arc::new(session),
+            catalog,
+            repair,
+        })
     }
     /// Validate and transmit one media frame within a local I/O budget.
     /// 校验媒体单元并在本地 I/O 预算内发送。
     pub async fn send(&self, frame: &Frame, budget: Duration) -> Result<(), Error> {
-        self.session
-            .send(&frame.to_object(&self.catalog)?, budget)
-            .await
+        self.start_send(frame, budget).await?.finish().await
     }
     pub fn poll_keyframe_request(&self) -> Result<Option<u16>, Error> {
         let track = self.session.poll_keyframe_request();
@@ -282,10 +294,41 @@ impl Publisher {
         &self,
         frame: &Frame,
         budget: Duration,
-    ) -> Result<crate::ObjectSend, Error> {
-        self.session
-            .start_send(&frame.to_object(&self.catalog)?, budget)
+    ) -> Result<MediaSend, Error> {
+        self.start_send_until(frame, crate::deadline::Deadline::after(budget)?)
             .await
+    }
+    pub(crate) async fn start_send_until(
+        &self,
+        frame: &Frame,
+        deadline: crate::deadline::Deadline,
+    ) -> Result<MediaSend, Error> {
+        match &self.repair {
+            Some(repair) => Ok(MediaSend::Repair(
+                repair
+                    .start(self.session.clone(), frame, &self.catalog, deadline)
+                    .await?,
+            )),
+            None => Ok(MediaSend::Raw(
+                self.session
+                    .start_send_until(&frame.to_object(&self.catalog)?, deadline)
+                    .await?,
+            )),
+        }
+    }
+}
+// Relay继续按媒体对象追踪确认，分片不能冒充解码确认。
+// Relay tracks media object receipts; fragment ACKs are never decode receipts.
+pub(crate) enum MediaSend {
+    Raw(crate::ObjectSend),
+    Repair(crate::repair::transport::GroupSend),
+}
+impl MediaSend {
+    pub(crate) async fn finish(self) -> Result<(), Error> {
+        match self {
+            Self::Raw(send) => send.finish().await,
+            Self::Repair(send) => send.finish().await,
+        }
     }
 }
 
@@ -293,6 +336,7 @@ impl Publisher {
 /// 订阅端校验初始目录和每个媒体单元，不将网络收取当作解码成功。
 pub struct Subscriber {
     session: Session,
+    repair: Option<crate::repair::transport::Receiver>,
     catalog: Catalog,
 }
 impl Subscriber {
@@ -307,6 +351,13 @@ impl Subscriber {
         residence: Duration,
         recovering: bool,
     ) -> Result<Option<Frame>, Error> {
+        if let Some(repair) = &self.repair {
+            return repair
+                .recv(&self.session, total, residence, recovering)
+                .await?
+                .map(|object| Frame::from_object(object, &self.catalog))
+                .transpose();
+        }
         let result = self
             .session
             .recv_retained(total, residence, recovering)
@@ -321,6 +372,9 @@ impl Subscriber {
     /// 停止有界保留状态，允许显式切换回其他接收模式。
     pub fn clear_retained_receive(&mut self) {
         self.session.clear_retained_receive();
+        if let Some(repair) = &mut self.repair {
+            repair.clear();
+        }
     }
     /// Read and validate the mandatory catalog before receiving media.
     /// 接收媒体前读取并校验必需的目录。
@@ -341,7 +395,20 @@ impl Subscriber {
                 .agreement()
                 .ok_or(Error::Protocol("closed session"))?,
         )?;
-        Ok(Self { session, catalog })
+        let repair = if session.agreement().is_some_and(|a| {
+            a.extensions
+                .iter()
+                .any(|e| e.id == crate::repair::EXTENSION_ID)
+        }) {
+            Some(crate::repair::transport::Receiver::new(&session)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            session,
+            catalog,
+            repair,
+        })
     }
     /// Return the validated immutable track catalog.
     /// 返回已校验的不可变轨道目录。
@@ -382,10 +449,30 @@ impl Subscriber {
     /// Receive a validated frame; decoding and deadline scheduling are separate.
     /// 接收已校验的媒体单元，解码及截止时间调度由调用方驱动。
     pub async fn recv(&mut self, budget: Duration) -> Result<Frame, Error> {
-        Frame::from_object(self.session.recv(budget).await?, &self.catalog)
+        self.recv_shared(budget).await
     }
     // Relay必须保留同一个读取future，反馈唤醒不应取消已接受的半对象。
     pub(crate) async fn recv_shared(&self, budget: Duration) -> Result<Frame, Error> {
+        if let Some(repair) = &self.repair {
+            let end = tokio::time::Instant::now() + budget;
+            loop {
+                let remaining = end.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(Error::Timeout);
+                }
+                if let Some(object) = repair
+                    .recv(
+                        &self.session,
+                        remaining,
+                        remaining.min(Duration::from_secs(1)),
+                        false,
+                    )
+                    .await?
+                {
+                    return Frame::from_object(object, &self.catalog);
+                }
+            }
+        }
         Frame::from_object(self.session.recv_shared(budget).await?, &self.catalog)
     }
     /// Receive live media, reporting local expiry or RESET(1) as a recovery gap.
@@ -395,6 +482,13 @@ impl Subscriber {
         idle: Duration,
         residence: Duration,
     ) -> Result<Option<Frame>, Error> {
+        if let Some(repair) = &self.repair {
+            return repair
+                .recv(&self.session, idle, residence, false)
+                .await?
+                .map(|object| Frame::from_object(object, &self.catalog))
+                .transpose();
+        }
         self.session
             .recv_live(idle, residence)
             .await?
@@ -410,6 +504,13 @@ impl Subscriber {
         idle: Duration,
         residence: Duration,
     ) -> Result<Option<Frame>, Error> {
+        if let Some(repair) = &self.repair {
+            return repair
+                .recv(&self.session, idle, residence, true)
+                .await?
+                .map(|object| Frame::from_object(object, &self.catalog))
+                .transpose();
+        }
         self.session
             .recv_recovery(idle, residence)
             .await?
@@ -423,6 +524,13 @@ impl Subscriber {
         idle: Duration,
         residence: Duration,
     ) -> Result<Option<Frame>, Error> {
+        if let Some(repair) = &self.repair {
+            return repair
+                .recv(&self.session, idle, residence, true)
+                .await?
+                .map(|object| Frame::from_object(object, &self.catalog))
+                .transpose();
+        }
         self.session
             .recv_recovery_concurrent(idle, residence)
             .await?

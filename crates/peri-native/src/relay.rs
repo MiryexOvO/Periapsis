@@ -20,6 +20,9 @@ pub struct Limits {
     pub queued_frames: usize,
     pub frame_bytes: usize,
     pub residence: Duration,
+    /// 每个观看者排队、写入和待确认对象的媒体负载额度。
+    /// Media payload allowance across queued, writing and unacknowledged objects per viewer.
+    pub buffered_bytes: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -28,18 +31,20 @@ impl Default for Limits {
             queued_frames: 8,
             frame_bytes: 1024 * 1024 - 68,
             residence: Duration::from_millis(300),
+            buffered_bytes: 12 * (1024 * 1024 - 68),
         }
     }
 }
 
-#[derive(Clone)]
 struct Item {
     frame: Arc<Frame>,
     received: Instant,
+    _bytes: tokio::sync::OwnedSemaphorePermit,
 }
 struct Viewer {
     queue: mpsc::Sender<Item>,
     cancel: oneshot::Sender<()>,
+    bytes: Arc<tokio::sync::Semaphore>,
 }
 struct State {
     viewers: HashMap<u64, Viewer>,
@@ -88,9 +93,12 @@ impl Relay {
         let cache_bound = limits
             .queued_frames
             .checked_add(4)
-            .and_then(|frames| frames.checked_mul(limits.viewers))
-            .and_then(|frames| frames.checked_mul(limits.frame_bytes));
+            .and_then(|frames| frames.checked_mul(limits.frame_bytes))
+            .map(|bytes| bytes.min(limits.buffered_bytes))
+            .and_then(|bytes| bytes.checked_mul(limits.viewers));
         if cache_bound.is_none_or(|bytes| bytes > 128 * 1024 * 1024)
+            || limits.buffered_bytes < limits.frame_bytes
+            || limits.buffered_bytes > 128 * 1024 * 1024
             || limits.viewers == 0
             || limits.viewers > 64
             || limits.queued_frames == 0
@@ -186,14 +194,30 @@ impl Relay {
                 state.references.pop_front();
             }
         }
-        let item = Item {
-            frame: Arc::new(frame),
-            received: now,
-        };
+        let frame = Arc::new(frame);
+        // 共享负载按观看者分别计费；一人的拥塞不能占用另一人的额度。
+        // Charge shared payload separately per viewer so congestion stays isolated.
         let stale: Vec<_> = state
             .viewers
             .iter()
-            .filter_map(|(id, viewer)| viewer.queue.try_send(item.clone()).err().map(|_| *id))
+            .filter_map(|(id, viewer)| {
+                let reservation = viewer
+                    .bytes
+                    .clone()
+                    .try_acquire_many_owned(frame.payload.len() as u32);
+                let failed = match reservation {
+                    Ok(bytes) => viewer
+                        .queue
+                        .try_send(Item {
+                            frame: frame.clone(),
+                            received: now,
+                            _bytes: bytes,
+                        })
+                        .is_err(),
+                    Err(_) => true,
+                };
+                failed.then_some(*id)
+            })
             .collect();
         for id in stale {
             if let Some(viewer) = state.viewers.remove(&id) {
@@ -224,7 +248,14 @@ impl Relay {
             state.next_id = id
                 .checked_add(1)
                 .ok_or(Error::Protocol("relay viewer id exhausted"))?;
-            state.viewers.insert(id, Viewer { queue, cancel });
+            state.viewers.insert(
+                id,
+                Viewer {
+                    queue,
+                    cancel,
+                    bytes: Arc::new(tokio::sync::Semaphore::new(self.limits.buffered_bytes)),
+                },
+            );
             id
         };
         let _registration = Registration { relay: self, id };
@@ -233,10 +264,25 @@ impl Relay {
             let feedback_changed = publisher.feedback_notification();
             let mut forwarded = VecDeque::<(u64, u16)>::new();
             let mut sends = tokio::task::JoinSet::new();
+            // 只保留一个待开流操作；反馈唤醒时继续poll同一个future，不重开流或续期。
+            // Keep one pending write; feedback wakeups never recreate its future or deadline.
+            type Starting<'a> = std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = (Item, Result<crate::media::MediaSend, Error>)>
+                        + Send
+                        + 'a,
+                >,
+            >;
+            let mut starting: Option<Starting<'_>> = None;
             let mut recovery_points = HashMap::<u16, u64>::new();
             let mut decoded_points = HashMap::<u16, u64>::new();
             loop {
-                while let Some(mut request) = publisher.poll_recovery()? {
+                // 每轮限制反馈工作量，让发送、确认和期限也有机会推进。
+                // Bound feedback work per turn so writes, receipts and deadlines keep progressing.
+                for _ in 0..8 {
+                    let Some(mut request) = publisher.poll_recovery()? else {
+                        break;
+                    };
                     request.viewer = id;
                     let mut requests = self.requests.lock().expect("requests");
                     enqueue_recovery(&mut requests, request);
@@ -252,7 +298,6 @@ impl Relay {
                     self.changed.notify_one();
                 }
                 let item = tokio::select! {
-                    biased;
                     // 控制反馈不等待下一帧或ACK完成；通知不增加队列和后台任务。
                     _ = feedback_changed.notified() => { continue; },
                     completed = sends.join_next(), if !sends.is_empty() => {
@@ -271,9 +316,50 @@ impl Relay {
                         }
                         continue;
                     }
+                    completed = async { starting.as_mut().expect("pending start").await }, if starting.is_some() => {
+                        starting = None;
+                        let (item, result) = completed;
+                        let frame = &item.frame;
+                        match result {
+                            Ok(send) => {
+                                // 前驱可能在等待写入期间失败；再次检查依赖，取消已失效的发送。
+                                // A predecessor can fail while this write waits; recheck before retaining the receipt.
+                                if !frame.dependencies.iter().all(|seq| forwarded.contains(&(*seq, frame.track))) {
+                                    drop(send);
+                                    forwarded.retain(|(_, track)| *track != frame.track);
+                                    self.request_recovery(frame.track, id, frame.sequence);
+                                    continue;
+                                }
+                                let track = frame.track;
+                                let sequence = frame.sequence;
+                                let kind = frame.kind;
+                                if matches!(kind, FrameKind::Key | FrameKind::Audio) {
+                                    recovery_points.insert(track, sequence);
+                                }
+                                if kind != FrameKind::Disposable {
+                                    forwarded.push_back((sequence, track));
+                                    if forwarded.len() > 128 { forwarded.pop_front(); }
+                                }
+                                sends.spawn(async move {
+                                    let result = send.finish().await;
+                                    // 直到确认或取消才归还负载额度，出队不等于释放。
+                                    // Return payload credit at receipt completion or cancellation, not on dequeue.
+                                    drop(item);
+                                    (track, sequence, kind, result)
+                                });
+                            },
+                            Err(Error::Timeout | Error::ObjectAborted) => {
+                                crate::trace("relay_start_failed", serde_json::json!({"viewer":id,"sequence":frame.sequence}));
+                                forwarded.retain(|(_, track)| *track != frame.track);
+                                self.request_recovery(frame.track, id, frame.sequence);
+                            },
+                            Err(error) => return Err(error),
+                        }
+                        continue;
+                    }
                     // 四个发送槽都在等待确认时，先让有界队列保留新帧。
                     // 不因瞬时槽满立即丢掉参考帧；出队后仍按原始接收时间检查截止。
-                    item = receiver.recv(), if sends.len() < 4 => item,
+                    item = receiver.recv(), if starting.is_none() && sends.len() < 4 => item,
                 };
                 let item = item.ok_or(Error::Protocol("relay closed"))?;
                 let frame = &item.frame;
@@ -300,33 +386,13 @@ impl Relay {
                         serde_json::json!({"viewer":id,"sequence":frame.sequence,"bytes":frame.payload.len(),"budget_ms":(deadline-now).as_millis()}),
                     );
                 }
-                match publisher.start_send(frame, deadline - now).await {
-                    Ok(send) => {
-                        let track = frame.track;
-                        let sequence = frame.sequence;
-                        let kind = frame.kind;
-                        sends.spawn(async move { (track, sequence, kind, send.finish().await) });
-                        if matches!(frame.kind, FrameKind::Key | FrameKind::Audio) {
-                            recovery_points.insert(track, sequence);
-                        }
-                    }
-                    Err(Error::Timeout | Error::ObjectAborted) => {
-                        crate::trace(
-                            "relay_start_failed",
-                            serde_json::json!({"viewer":id,"sequence":frame.sequence}),
-                        );
-                        forwarded.retain(|(_, id)| *id != frame.track);
-                        self.request_recovery(frame.track, id, frame.sequence);
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                }
-                if frame.kind != FrameKind::Disposable {
-                    forwarded.push_back((frame.sequence, frame.track));
-                    if forwarded.len() > 128 {
-                        forwarded.pop_front();
-                    }
-                }
+                let publisher = &publisher;
+                starting = Some(Box::pin(async move {
+                    let result = publisher
+                        .start_send_until(&item.frame, crate::deadline::Deadline::at(deadline))
+                        .await;
+                    (item, result)
+                }));
             }
         };
         tokio::select! {
@@ -469,6 +535,7 @@ mod tests {
                 0,
                 Viewer {
                     queue: slow,
+                    bytes: Arc::new(tokio::sync::Semaphore::new(1024)),
                     cancel: slow_cancel,
                 },
             );
@@ -476,6 +543,7 @@ mod tests {
                 1,
                 Viewer {
                     queue: fast,
+                    bytes: Arc::new(tokio::sync::Semaphore::new(1024)),
                     cancel: fast_cancel,
                 },
             );
@@ -511,8 +579,81 @@ mod tests {
         relay.close();
         assert!(relay.push(key(3), Instant::now()).is_err());
     }
+    // 字节额度必须跨越出队阶段；释放对象才归还，慢观看者独立断开。
+    // Credit survives dequeue; dropping the item returns it, and a slow viewer is isolated.
+    #[test]
+    fn payload_credit_survives_dequeue_and_isolated_overflow() {
+        let relay = Relay::new(catalog(), Limits::default()).unwrap();
+        let bytes = Arc::new(tokio::sync::Semaphore::new(1));
+        let (queue, mut receiver) = mpsc::channel(8);
+        let (cancel, mut cancelled) = oneshot::channel();
+        relay.state.lock().unwrap().viewers.insert(
+            0,
+            Viewer {
+                queue,
+                cancel,
+                bytes: bytes.clone(),
+            },
+        );
+        relay.push(key(1), Instant::now()).unwrap();
+        let inflight = receiver.try_recv().unwrap();
+        assert_eq!(bytes.available_permits(), 0);
+        relay.push(key(2), Instant::now()).unwrap();
+        assert!(cancelled.try_recv().is_ok());
+        assert_eq!(relay.viewers(), 0);
+        assert_eq!(bytes.available_permits(), 0);
+        drop(inflight);
+        assert_eq!(bytes.available_permits(), 1);
+    }
+
+    // 通道满导致入队失败时，临时预留的字节必须归还。
+    // Failed queue admission must return its temporary byte reservation.
+    #[test]
+    fn failed_enqueue_returns_payload_credit() {
+        let relay = Relay::new(catalog(), Limits::default()).unwrap();
+        let bytes = Arc::new(tokio::sync::Semaphore::new(8));
+        let (queue, mut receiver) = mpsc::channel(1);
+        let (cancel, _) = oneshot::channel();
+        relay.state.lock().unwrap().viewers.insert(
+            0,
+            Viewer {
+                queue,
+                cancel,
+                bytes: bytes.clone(),
+            },
+        );
+        relay.push(key(1), Instant::now()).unwrap();
+        relay.push(key(2), Instant::now()).unwrap();
+        assert_eq!(bytes.available_permits(), 7);
+        drop(receiver.try_recv().unwrap());
+        assert_eq!(bytes.available_permits(), 8);
+        assert!(
+            Relay::new(
+                catalog(),
+                Limits {
+                    buffered_bytes: 0,
+                    ..Limits::default()
+                }
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn aggregate_cache_limit_rejects_oversized_configuration() {
+        // 显式字节额度允许较长的小帧队列，总预留仍受128MiB限制。
+        // Explicit byte limits permit longer small-frame queues within the aggregate cap.
+        assert!(
+            Relay::new(
+                catalog(),
+                Limits {
+                    viewers: 64,
+                    queued_frames: 128,
+                    buffered_bytes: 2 * 1024 * 1024,
+                    ..Limits::default()
+                }
+            )
+            .is_ok()
+        );
         assert!(
             Relay::new(
                 catalog(),

@@ -1443,3 +1443,48 @@ async fn recovery_position_crosses_real_quic() -> Result<(), TestError> {
     assert!(request.id > 0);
     Ok(())
 }
+
+// 零预算不能开流；已收到ACK也不能让过期句柄重新成功。
+// Zero budget opens no stream; an available ACK cannot revive an expired receipt.
+#[tokio::test]
+async fn object_deadline_covers_admission_and_delayed_receipt() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (sender, mut receiver) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/deadline", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/deadline", BUDGET)
+    )?;
+    let object = Object {
+        sequence: 1,
+        timestamp_us: 0,
+        duration_us: 66667,
+        independent: true,
+        payload: vec![42; 100],
+    };
+    assert!(matches!(
+        sender.start_send(&object, Duration::ZERO).await,
+        Err(Error::Timeout)
+    ));
+    assert!(matches!(
+        sender.start_send(&object, Duration::MAX).await,
+        Err(Error::Protocol("deadline overflow"))
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), pair.outgoing.accept_uni())
+            .await
+            .is_err()
+    );
+    let budget = Duration::from_millis(200);
+    let receipt = sender.start_send(&object, budget).await?;
+    assert_eq!(receiver.recv(BUDGET).await?, object);
+    tokio::time::sleep(budget + Duration::from_millis(20)).await;
+    assert!(matches!(receipt.finish().await, Err(Error::Timeout)));
+    // 超期句柄释放发送槽，后续对象仍能收发。
+    // Expired receipts release capacity for subsequent objects.
+    let next = Object {
+        sequence: 2,
+        ..object
+    };
+    let (_, got) = tokio::try_join!(sender.send(&next, BUDGET), receiver.recv(BUDGET))?;
+    assert_eq!(got, next);
+    Ok(())
+}
