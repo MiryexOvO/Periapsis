@@ -71,6 +71,7 @@ struct SendState {
     report: Option<Instant>,
 }
 pub(crate) struct Feedback {
+    pub(crate) changed: std::sync::Arc<tokio::sync::Notify>,
     send: AsyncMutex<SendState>,
     inbox: Mutex<mpsc::Receiver<RecoveryRequest>>,
     reports: std::sync::Arc<Mutex<Option<(ReceiverReport, Instant)>>>,
@@ -88,6 +89,9 @@ impl Feedback {
         let reports = std::sync::Arc::new(Mutex::new(None));
         let output = reports.clone();
         let peer = connection.clone();
+        // 通知只负责唤醒轮询，数据仍留在有界邮箱；permit可覆盖先写入后等待的竞态。
+        let changed = std::sync::Arc::new(tokio::sync::Notify::new());
+        let wake = changed.clone();
         let reader = tokio::spawn(async move {
             let mut window = Instant::now();
             let mut count = 0;
@@ -110,16 +114,20 @@ impl Feedback {
                         viewer,
                         after_sequence,
                     }) if track > 0 && id > 0 => {
-                        let _ = tx.try_send(RecoveryRequest {
+                        let queued = tx.try_send(RecoveryRequest {
                             track,
                             origin,
                             id,
                             viewer,
                             after_sequence,
                         });
+                        if queued.is_ok() {
+                            wake.notify_one();
+                        }
                     }
                     Ok(Control::ReceiverReport { report }) if report.valid() => {
                         *output.lock().expect("reports") = Some((report, Instant::now()));
+                        wake.notify_one();
                     }
                     _ => {
                         peer.close(2u32.into(), b"invalid feedback");
@@ -129,6 +137,7 @@ impl Feedback {
             }
         });
         Self {
+            changed,
             send: AsyncMutex::new(SendState {
                 stream: send,
                 key: None,

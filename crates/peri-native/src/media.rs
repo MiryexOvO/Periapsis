@@ -213,6 +213,13 @@ pub struct Publisher {
     catalog: Catalog,
 }
 impl Publisher {
+    /// 本次发布连接的传输计数；与接收端相同，统计不代替远端解码确认。
+    pub fn transport_stats(&self) -> crate::quinn::ConnectionStats {
+        self.session.transport_stats()
+    }
+    pub(crate) fn feedback_notification(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        self.session.feedback.changed.clone()
+    }
     /// Send the immutable catalog before accepting media sends.
     /// 先发送不可变目录，再开放媒体发送接口。
     pub async fn new(session: Session, catalog: Catalog, budget: Duration) -> Result<Self, Error> {
@@ -289,6 +296,32 @@ pub struct Subscriber {
     catalog: Catalog,
 }
 impl Subscriber {
+    /// 本次连接的传输计数，便于接入方检查ACK扩展是否实际收发及上行开销。
+    pub fn transport_stats(&self) -> crate::quinn::ConnectionStats {
+        self.session.transport_stats()
+    }
+    /// 单资源按序发布时，四槽并读并保留胜出关键帧之后的对象；解码依赖仍由应用确认。
+    pub async fn recv_retained(
+        &mut self,
+        total: Duration,
+        residence: Duration,
+        recovering: bool,
+    ) -> Result<Option<Frame>, Error> {
+        let result = self
+            .session
+            .recv_retained(total, residence, recovering)
+            .await?
+            .map(|object| Frame::from_object(object, &self.catalog))
+            .transpose();
+        if result.is_err() {
+            self.session.clear_retained_receive();
+        }
+        result
+    }
+    /// 停止有界保留状态，允许显式切换回其他接收模式。
+    pub fn clear_retained_receive(&mut self) {
+        self.session.clear_retained_receive();
+    }
     /// Read and validate the mandatory catalog before receiving media.
     /// 接收媒体前读取并校验必需的目录。
     pub async fn new(mut session: Session, budget: Duration) -> Result<Self, Error> {
@@ -351,6 +384,10 @@ impl Subscriber {
     pub async fn recv(&mut self, budget: Duration) -> Result<Frame, Error> {
         Frame::from_object(self.session.recv(budget).await?, &self.catalog)
     }
+    // Relay必须保留同一个读取future，反馈唤醒不应取消已接受的半对象。
+    pub(crate) async fn recv_shared(&self, budget: Duration) -> Result<Frame, Error> {
+        Frame::from_object(self.session.recv_shared(budget).await?, &self.catalog)
+    }
     /// Receive live media, reporting local expiry or RESET(1) as a recovery gap.
     /// 实时收取媒体；局部超时或RESET(1)返回缺口，由调用方决定是否恢复参考链。
     pub async fn recv_live(
@@ -375,6 +412,19 @@ impl Subscriber {
     ) -> Result<Option<Frame>, Error> {
         self.session
             .recv_recovery(idle, residence)
+            .await?
+            .map(|object| Frame::from_object(object, &self.catalog))
+            .transpose()
+    }
+    /// 所有依赖轨道都在恢复时，最多四个对象并读，首个完整独立帧胜出。
+    /// 其余已接受流被取消；不能用于仍需保留其他轨道依赖帧的场景。
+    pub async fn recv_recovery_concurrent(
+        &mut self,
+        idle: Duration,
+        residence: Duration,
+    ) -> Result<Option<Frame>, Error> {
+        self.session
+            .recv_recovery_concurrent(idle, residence)
             .await?
             .map(|object| Frame::from_object(object, &self.catalog))
             .transpose()

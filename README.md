@@ -45,3 +45,7 @@ Linux/macOS 使用 `./target/debug/peri`。
 - [媒体配置](docs/PERI-MEDIA-01.md)
 
 仓库中的开发脚本和历史实验不是对外 SDK 或正式接入入口。
+研发弱网验收可使用[累计卡顿诊断](docs/PERI-FREEZE-01.md)关联接收、解码和Relay日志。
+全轨道恢复时的可选接收策略见[四路恢复接收候选](docs/PERI-RECEIVE-01.md)。
+发送端完成对象的候选调度策略见[按对象集中发送实验](docs/PERI-SEND-01.md)。
+底层确认频率与可观测统计见[频繁传输确认候选](docs/PERI-ACK-01.md)。

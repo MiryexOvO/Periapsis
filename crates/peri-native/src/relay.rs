@@ -58,6 +58,7 @@ pub struct Relay {
     state: Mutex<State>,
     requests: Mutex<Vec<crate::RecoveryRequest>>,
     report: Mutex<Option<crate::ReceiverReport>>,
+    changed: tokio::sync::Notify,
 }
 struct Registration<'a> {
     relay: &'a Relay,
@@ -106,6 +107,7 @@ impl Relay {
             limits,
             requests: Mutex::new(Vec::new()),
             report: Mutex::new(None),
+            changed: tokio::sync::Notify::new(),
             state: Mutex::new(State {
                 viewers: HashMap::new(),
                 next_id: 0,
@@ -119,7 +121,7 @@ impl Relay {
 
     /// Ingest an ordered publisher; errors, idle timeout or cancellation close the resource.
     /// 接收有序发布端；错误、空闲超时或取消会关闭资源并通知所有订阅者。
-    pub async fn ingest(&self, mut source: Subscriber, idle_budget: Duration) -> Result<(), Error> {
+    pub async fn ingest(&self, source: Subscriber, idle_budget: Duration) -> Result<(), Error> {
         if source.catalog() != &self.catalog {
             return Err(Error::Protocol("relay catalog mismatch"));
         }
@@ -132,22 +134,31 @@ impl Relay {
         }
         let _guard = IngestGuard(self);
         loop {
-            let requests = std::mem::take(&mut *self.requests.lock().expect("requests"));
-            for request in requests {
-                crate::trace("relay_recovery", request);
-                source.forward_recovery(request).await?;
-            }
-            let report = self.report.lock().expect("report").take();
-            if let Some(report) = report {
-                let sole = {
-                    let state = self.state.lock().expect("relay lock");
-                    state.viewers.len() == 1 && state.viewers.contains_key(&report.viewer)
-                };
-                if sole {
-                    source.send_report(report).await?;
+            // 读取future只创建一次；反馈到达不重启空闲预算，也不取消半个对象。
+            let receive = source.recv_shared(idle_budget);
+            tokio::pin!(receive);
+            let frame = loop {
+                let requests = std::mem::take(&mut *self.requests.lock().expect("requests"));
+                for request in requests {
+                    crate::trace("relay_recovery", request);
+                    source.forward_recovery(request).await?;
                 }
-            }
-            self.push(source.recv(idle_budget).await?, Instant::now())?;
+                let report = self.report.lock().expect("report").take();
+                if let Some(report) = report {
+                    let sole = {
+                        let state = self.state.lock().expect("relay lock");
+                        state.viewers.len() == 1 && state.viewers.contains_key(&report.viewer)
+                    };
+                    if sole {
+                        source.send_report(report).await?;
+                    }
+                }
+                tokio::select! {
+                    result = &mut receive => break result?,
+                    _ = self.changed.notified() => {},
+                }
+            };
+            self.push(frame, Instant::now())?;
         }
     }
 
@@ -219,15 +230,17 @@ impl Relay {
         let _registration = Registration { relay: self, id };
         let operation = async {
             let publisher = Publisher::new(session, self.catalog.clone(), setup_budget).await?;
+            let feedback_changed = publisher.feedback_notification();
             let mut forwarded = VecDeque::<(u64, u16)>::new();
             let mut sends = tokio::task::JoinSet::new();
             let mut recovery_points = HashMap::<u16, u64>::new();
             let mut decoded_points = HashMap::<u16, u64>::new();
             loop {
-                if let Some(mut request) = publisher.poll_recovery()? {
+                while let Some(mut request) = publisher.poll_recovery()? {
                     request.viewer = id;
                     let mut requests = self.requests.lock().expect("requests");
                     enqueue_recovery(&mut requests, request);
+                    self.changed.notify_one();
                 }
                 if let Some(mut report) = publisher.poll_report()? {
                     decoded_points
@@ -236,9 +249,12 @@ impl Relay {
                         .or_insert(report.sequence);
                     report.viewer = id;
                     *self.report.lock().expect("report") = Some(report);
+                    self.changed.notify_one();
                 }
                 let item = tokio::select! {
                     biased;
+                    // 控制反馈不等待下一帧或ACK完成；通知不增加队列和后台任务。
+                    _ = feedback_changed.notified() => { continue; },
                     completed = sends.join_next(), if !sends.is_empty() => {
                         let (track, sequence, kind, result) = completed.expect("pending send").map_err(crate::transport)?;
                         match result {
@@ -270,7 +286,7 @@ impl Relay {
                 if deadline <= now || !ready || sends.len() >= 4 {
                     crate::trace(
                         "relay_drop",
-                        serde_json::json!({"viewer":id,"sequence":frame.sequence,"key":frame.kind == FrameKind::Key,"bytes":frame.payload.len(),"reason":if deadline <= now {"expired"} else if !ready {"dependency"} else {"inflight_limit"}}),
+                        serde_json::json!({"viewer":id,"sequence":frame.sequence,"key":frame.kind == FrameKind::Key,"bytes":frame.payload.len(),"queue_ms":now.saturating_duration_since(item.received).as_millis(),"reason":if deadline <= now {"expired"} else if !ready {"dependency"} else {"inflight_limit"}}),
                     );
                     if frame.kind != FrameKind::Disposable {
                         forwarded.retain(|(_, track)| *track != frame.track);
@@ -331,6 +347,7 @@ impl Relay {
                 &mut requests,
                 crate::RecoveryRequest::after(track, viewer, after_sequence),
             );
+            self.changed.notify_one();
         }
     }
 

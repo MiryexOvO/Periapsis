@@ -24,6 +24,7 @@ pub mod adaptation;
 pub mod auth;
 pub mod av1;
 mod feedback;
+mod receive;
 pub use feedback::{ReceiverReport, RecoveryRequest, trace};
 pub mod media;
 pub mod playback;
@@ -136,10 +137,16 @@ impl Drop for ConnectionGuard {
 struct PendingSend {
     stream: quinn::SendStream,
     complete: bool,
+    sequence: u64,
+    reason: &'static str,
 }
 impl Drop for PendingSend {
     fn drop(&mut self) {
         if !self.complete {
+            trace(
+                "object_send_cancel",
+                serde_json::json!({"stream":self.stream.id().index(),"sequence":self.sequence,"reason":self.reason}),
+            );
             let _ = self.stream.reset(1u32.into());
         }
     }
@@ -155,8 +162,12 @@ pub struct ObjectSend {
 impl ObjectSend {
     /// Await transport acknowledgement within the original budget and release the slot.
     pub async fn finish(mut self) -> Result<(), Error> {
-        tokio::time::timeout_at(self.deadline, async {
-            if let Some(code) = self.pending.stream.stopped().await.map_err(transport)? {
+        let outcome = tokio::time::timeout_at(self.deadline, async {
+            if let Some(code) = self.pending.stream.stopped().await.map_err(|error| {
+                self.pending.reason = "ack_error";
+                transport(error)
+            })? {
+                self.pending.reason = "peer_stop";
                 return Err(if code == 1u32.into() {
                     Error::ObjectAborted
                 } else {
@@ -166,8 +177,11 @@ impl ObjectSend {
             self.pending.complete = true;
             Ok(())
         })
-        .await
-        .map_err(|_| Error::Timeout)?
+        .await;
+        if outcome.is_err() {
+            self.pending.reason = "ack_deadline";
+        }
+        outcome.map_err(|_| Error::Timeout)?
     }
 }
 
@@ -179,8 +193,13 @@ pub struct Session {
     publisher: bool,
     send_slots: std::sync::Arc<tokio::sync::Semaphore>,
     feedback: feedback::Feedback,
+    retained: receive::Retained,
 }
 impl Session {
+    /// 当前连接的本地QUIC计数快照；不是媒体解码确认，也不代表远端报告的生成时刻。
+    pub fn transport_stats(&self) -> quinn::ConnectionStats {
+        self.guard.0.stats()
+    }
     pub async fn request_keyframe(&self, track: u16) -> Result<(), Error> {
         if self.publisher {
             return Err(Error::Protocol("publisher cannot request keyframe"));
@@ -270,18 +289,22 @@ impl Session {
         let mut pending = PendingSend {
             stream,
             complete: false,
+            sequence: object.sequence,
+            reason: "write_cancelled",
         };
         tokio::time::timeout_at(deadline, async {
             AsyncWriteExt::write_all(&mut pending.stream, &bytes).await.map_err(|error| {
                 if matches!(error.get_ref().and_then(|e| e.downcast_ref::<quinn::WriteError>()), Some(quinn::WriteError::Stopped(code)) if *code == 1u32.into()) {
+                    pending.reason="peer_stop";
                     Error::ObjectAborted
-                } else { Error::Io(error) }
+                } else { pending.reason="write_error"; Error::Io(error) }
             })?;
             pending.stream.finish().map_err(transport)?;
             Ok::<_, Error>(())
         })
         .await
-        .map_err(|_| Error::Timeout)??;
+        .map_err(|_| {pending.reason="write_deadline"; Error::Timeout})??;
+        pending.reason = "ack_wait_cancelled";
         Ok(ObjectSend {
             pending,
             _slot: slot,
@@ -313,11 +336,34 @@ impl Session {
         self.recv_live_selected(idle, residence, true).await
     }
 
-    async fn recv_live_selected(
+    /// 恢复阶段四路并发读取，交付首个完整独立对象并STOP(1)其他已接受流。
+    /// 仅适用于所有依赖轨道均在恢复的情况；交付顺序不是流序号顺序。
+    /// idle为本次调用总预算，取消会同步停止所有已接受流，负载分配上限4MiB。
+    pub async fn recv_recovery_concurrent(
         &mut self,
         idle: Duration,
         residence: Duration,
-        independent_only: bool,
+    ) -> Result<Option<Object>, Error> {
+        if self.retained.active() {
+            return Err(Error::Protocol("pending retained receive"));
+        }
+        if self.publisher {
+            return Err(Error::Protocol("publisher cannot subscribe"));
+        }
+        if residence.is_zero() || residence > Duration::from_secs(1) {
+            return Err(Error::Protocol("object residence"));
+        }
+        receive::recovery(&self.guard.0, idle, residence).await
+    }
+
+    /// 四槽有序保留候选：恢复时选择完整独立对象，保留其后的流；正常时按开流顺序交付。
+    /// 要求单资源发布者按递增对象序号开流。所有依赖轨道须共同恢复，不用于混合活跃轨道。
+    /// 完整对象与读取共用四槽/4MiB额度，原始期限不刷新；取消及错误清空在途状态。
+    pub async fn recv_retained(
+        &mut self,
+        total: Duration,
+        residence: Duration,
+        recovering: bool,
     ) -> Result<Option<Object>, Error> {
         if self.publisher {
             return Err(Error::Protocol("publisher cannot subscribe"));
@@ -325,45 +371,59 @@ impl Session {
         if residence.is_zero() || residence > Duration::from_secs(1) {
             return Err(Error::Protocol("object residence"));
         }
-        let mut stream = tokio::time::timeout(idle, self.guard.0.accept_uni())
+        receive::retained(
+            &self.guard.0,
+            &mut self.retained,
+            total,
+            residence,
+            recovering,
+        )
+        .await
+    }
+    /// 显式停止保留的接收流后才能切换其他接收API；保留已交付序号防止倒退。
+    pub fn clear_retained_receive(&mut self) {
+        self.retained.clear();
+    }
+
+    async fn recv_live_selected(
+        &mut self,
+        idle: Duration,
+        residence: Duration,
+        independent_only: bool,
+    ) -> Result<Option<Object>, Error> {
+        if self.retained.active() {
+            return Err(Error::Protocol("pending retained receive"));
+        }
+        if self.publisher {
+            return Err(Error::Protocol("publisher cannot subscribe"));
+        }
+        if residence.is_zero() || residence > Duration::from_secs(1) {
+            return Err(Error::Protocol("object residence"));
+        }
+        let stream = tokio::time::timeout(idle, self.guard.0.accept_uni())
             .await
             .map_err(|_| Error::Timeout)?
             .map_err(transport)?;
-        match tokio::time::timeout(
-            residence,
-            wire::read_object_selected(&mut stream, independent_only),
-        )
-        .await
-        {
-            Err(_) => {
-                trace(
-                    "object_receive_expired",
-                    serde_json::json!({"residence_ms":residence.as_millis()}),
-                );
-                let _ = stream.stop(1u32.into());
-                Ok(None)
-            }
-            Ok(Err(Error::Io(error))) if matches!(error.get_ref().and_then(|e| e.downcast_ref::<quinn::ReadError>()), Some(quinn::ReadError::Reset(code)) if *code == 1u32.into()) => {
-                Ok(None)
-            }
-            Ok(Ok(None)) => {
-                let _ = stream.stop(1u32.into());
-                trace("recovery_object_skipped", serde_json::json!({}));
-                Ok(None)
-            }
-            Ok(result) => result,
-        }
+        receive::serial(stream, residence, independent_only).await
     }
 
     /// Receive one complete object with bounded allocation and a caller time budget.
     /// 按调用方预算收取完整对象，长度在分配前校验；应用负责序号与依赖处理。
     pub async fn recv(&mut self, budget: Duration) -> Result<Object, Error> {
+        self.recv_shared(budget).await
+    }
+
+    // 仅供内部单接收循环与反馈转发并行借用，公开API仍用&mut限制接收所有权。
+    pub(crate) async fn recv_shared(&self, budget: Duration) -> Result<Object, Error> {
+        if self.retained.active() {
+            return Err(Error::Protocol("pending retained receive"));
+        }
         if self.publisher {
             return Err(Error::Protocol("publisher cannot subscribe"));
         }
         tokio::time::timeout(budget, async {
-            let mut stream = self.guard.0.accept_uni().await.map_err(transport)?;
-            wire::read_object(&mut stream).await
+            let stream = self.guard.0.accept_uni().await.map_err(transport)?;
+            receive::strict(stream).await
         })
         .await
         .map_err(|_| Error::Timeout)?
@@ -469,6 +529,7 @@ async fn initiate(
             guard,
             agreement,
             publisher: publishing,
+            retained: receive::Retained::default(),
             send_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
             feedback,
         })
@@ -556,6 +617,7 @@ async fn respond(
             guard,
             agreement,
             publisher: !requested_publish,
+            retained: receive::Retained::default(),
             send_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
             feedback,
         })

@@ -59,6 +59,28 @@ pub async fn read_object_selected<R: AsyncRead + Unpin>(
     reader: &mut R,
     independent_only: bool,
 ) -> Result<Option<Object>, Error> {
+    read_object_observed(reader, independent_only, &mut ReadProgress::default()).await
+}
+
+/// 本地诊断进度；完整头部通过验证后才关联序号，部分头部不能冒充已知对象。
+#[derive(Serialize)]
+pub(crate) struct ReadProgress {
+    pub sequence: Option<u64>,
+    pub phase: &'static str,
+}
+impl Default for ReadProgress {
+    fn default() -> Self {
+        Self {
+            sequence: None,
+            phase: "header",
+        }
+    }
+}
+pub(crate) async fn read_object_observed<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    independent_only: bool,
+    progress: &mut ReadProgress,
+) -> Result<Option<Object>, Error> {
     let sequence = reader.read_u64().await?;
     let timestamp_us = reader.read_u64().await?;
     let duration_us = reader.read_u32().await?;
@@ -67,16 +89,21 @@ pub async fn read_object_selected<R: AsyncRead + Unpin>(
     if flags > 1 || size == 0 || size > MAX_PAYLOAD {
         return Err(Error::Protocol("object header"));
     }
+    progress.sequence = Some(sequence);
     // 先校验长度和标志再跳过，防止恢复模式绕过头部边界检查；不分配旧参考负载。
     if independent_only && flags == 0 {
+        progress.phase = "selected_out";
         return Ok(None);
     }
+    progress.phase = "payload";
     let mut payload = vec![0; size];
     reader.read_exact(&mut payload).await?;
+    progress.phase = "fin";
     // 每个单向流只允许一个对象，禁止拼接对象或忽略尾部数据。
     if reader.read(&mut [0]).await? != 0 {
         return Err(Error::Protocol("object trailing data"));
     }
+    progress.phase = "complete";
     Ok(Some(Object {
         sequence,
         timestamp_us,
@@ -89,6 +116,46 @@ pub async fn read_object_selected<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn observation_never_assigns_unvalidated_sequence_and_distinguishes_fin() {
+        let object = Object {
+            sequence: 42,
+            timestamp_us: 0,
+            duration_us: 66667,
+            independent: true,
+            payload: vec![1, 2, 3],
+        };
+        let bytes = encode_object(&object).unwrap();
+        for scenario in 0..4 {
+            let mut input = bytes.clone();
+            match scenario {
+                0 => input[20] = 2,
+                1 => {
+                    input.pop();
+                }
+                2 => input.push(0),
+                _ => {}
+            }
+            let mut progress = ReadProgress::default();
+            let result = read_object_observed(&mut input.as_slice(), false, &mut progress).await;
+            if scenario == 0 {
+                assert_eq!(progress.sequence, None);
+                assert_eq!(progress.phase, "header");
+            } else {
+                assert_eq!(progress.sequence, Some(42));
+                assert_eq!(
+                    progress.phase,
+                    match scenario {
+                        1 => "payload",
+                        2 => "fin",
+                        _ => "complete",
+                    }
+                );
+            }
+            assert_eq!(result.is_ok(), scenario == 3);
+        }
+    }
 
     #[tokio::test]
     async fn rejects_lengths_before_reading_payload() {
