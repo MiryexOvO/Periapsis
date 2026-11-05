@@ -224,11 +224,10 @@ impl Relay {
             let mut recovery_points = HashMap::<u16, u64>::new();
             let mut decoded_points = HashMap::<u16, u64>::new();
             loop {
-                if let Some(request) = publisher.poll_recovery()? {
+                if let Some(mut request) = publisher.poll_recovery()? {
+                    request.viewer = id;
                     let mut requests = self.requests.lock().expect("requests");
-                    if !requests.iter().any(|r| r.track == request.track) && requests.len() < 8 {
-                        requests.push(request);
-                    }
+                    enqueue_recovery(&mut requests, request);
                 }
                 if let Some(mut report) = publisher.poll_report()? {
                     decoded_points
@@ -249,7 +248,7 @@ impl Relay {
                                 // A late failure from an older GOP must not invalidate a newer keyframe.
                                 if failure_requires_recovery(kind, sequence, recovery_points.get(&track).copied(), decoded_points.get(&track).copied()) {
                                     forwarded.retain(|(_, id)| *id != track);
-                                    self.request_recovery(track);
+                                    self.request_recovery(track,id,sequence);
                                 }
                             },
                             Err(error) => return Err(error),
@@ -275,7 +274,7 @@ impl Relay {
                     );
                     if frame.kind != FrameKind::Disposable {
                         forwarded.retain(|(_, track)| *track != frame.track);
-                        self.request_recovery(frame.track);
+                        self.request_recovery(frame.track, id, frame.sequence);
                     }
                     continue;
                 }
@@ -301,7 +300,7 @@ impl Relay {
                             serde_json::json!({"viewer":id,"sequence":frame.sequence}),
                         );
                         forwarded.retain(|(_, id)| *id != frame.track);
-                        self.request_recovery(frame.track);
+                        self.request_recovery(frame.track, id, frame.sequence);
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -320,7 +319,7 @@ impl Relay {
         }
     }
 
-    fn request_recovery(&self, track: u16) {
+    fn request_recovery(&self, track: u16, viewer: u64, after_sequence: u64) {
         if self
             .catalog
             .tracks
@@ -328,9 +327,10 @@ impl Relay {
             .any(|entry| entry.id == track && entry.kind == crate::media::TrackKind::Video)
         {
             let mut requests = self.requests.lock().expect("requests");
-            if !requests.iter().any(|r| r.track == track) && requests.len() < 8 {
-                requests.push(crate::RecoveryRequest::new(track));
-            }
+            enqueue_recovery(
+                &mut requests,
+                crate::RecoveryRequest::after(track, viewer, after_sequence),
+            );
         }
     }
 
@@ -517,5 +517,46 @@ mod tests {
             )
             .is_err()
         );
+    }
+}
+
+// 同一订阅者的需求可合并，不能用一个订阅者的已恢复进度覆盖另一个人的故障。
+fn enqueue_recovery(requests: &mut Vec<crate::RecoveryRequest>, request: crate::RecoveryRequest) {
+    if let Some(old) = requests
+        .iter_mut()
+        .find(|r| r.track == request.track && r.viewer == request.viewer)
+    {
+        let position = if old.after_sequence == 0 || request.after_sequence == 0 {
+            0
+        } else {
+            old.after_sequence.max(request.after_sequence)
+        };
+        *old = request;
+        old.after_sequence = position;
+    } else if requests.len() < 8 {
+        requests.push(request);
+    }
+}
+
+#[cfg(test)]
+mod recovery_queue_tests {
+    use super::*;
+    #[test]
+    fn scopes_cannot_coalesce_and_unknown_position_stays_conservative() {
+        let mut queue = Vec::new();
+        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 1, 10));
+        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 2, 20));
+        assert_eq!(queue.len(), 2);
+        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 1, 15));
+        assert_eq!(queue[0].after_sequence, 15);
+        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 1, 0));
+        assert_eq!(queue[0].after_sequence, 0);
+        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 1, 30));
+        assert_eq!(queue[0].after_sequence, 0);
+        for viewer in 3..=10 {
+            enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, viewer, 30));
+        }
+        assert_eq!(queue.len(), 8);
+        assert!(!queue.iter().any(|r| r.viewer == 10));
     }
 }

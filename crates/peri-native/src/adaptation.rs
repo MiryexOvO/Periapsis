@@ -203,6 +203,10 @@ impl RecoveryPacer {
                 .last
                 .is_none_or(|last| now.saturating_duration_since(last) >= self.interval)
     }
+    /// 撤销已被实际播放进度覆盖的需求，不重置编码冷却时间。
+    pub fn clear(&mut self) {
+        self.pending = false;
+    }
     /// 实际独立帧编码成功后清除需求并开始冷却，编码失败不得调用。
     pub fn encoded(&mut self, now: Instant) {
         self.pending = false;
@@ -225,11 +229,129 @@ mod recovery_tests {
             assert!(!p.ready(t + Duration::from_millis(ms)));
         }
         assert!(p.ready(t + Duration::from_millis(333)));
+        p.clear();
+        assert!(!p.ready(t + Duration::from_millis(333)));
+        p.request();
+        assert!(p.ready(t + Duration::from_millis(333)));
         p.encoded(t + Duration::from_millis(333));
         assert!(!p.ready(t + Duration::from_secs(10)));
         p.request();
         assert!(p.ready(t + Duration::from_secs(10)));
         assert!(RecoveryPacer::new(Duration::ZERO).is_none());
         assert!(RecoveryPacer::new(Duration::from_secs(2)).is_none());
+    }
+}
+
+/// 有界的接收进度窗口；只抑制同作用域中已被更新实际播放序号覆盖的请求。
+#[derive(Default)]
+pub struct RecoveryProgress {
+    entries: std::collections::VecDeque<(ReceiverReport, Instant)>,
+}
+impl RecoveryProgress {
+    /// 验证报告单调性，拒绝重放、序号回退和累计计数回退；最多保留8个轨道/观看者组合。
+    pub fn observe(&mut self, report: ReceiverReport, now: Instant) -> bool {
+        if !report.valid() {
+            return false;
+        }
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|(old, _)| old.track == report.track && old.viewer == report.viewer)
+        {
+            let old = self.entries[index].0;
+            if report.sample <= old.sample
+                || report.sequence < old.sequence
+                || report.dropped < old.dropped
+                || report.recoveries < old.recoveries
+            {
+                return false;
+            }
+            self.entries.remove(index);
+        }
+        if self.entries.len() == 8 {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((report, now));
+        true
+    }
+    /// 未知位置、不同观看者、相等序号或已老化报告均不能证明恢复。
+    pub fn obsolete(&self, request: crate::RecoveryRequest, now: Instant) -> bool {
+        request.after_sequence > 0
+            && self.entries.iter().any(|(report, at)| {
+                report.track == request.track
+                    && report.viewer == request.viewer
+                    && report.sequence > request.after_sequence
+                    && now
+                        .checked_duration_since(*at)
+                        .is_some_and(|age| age <= Duration::from_secs(2))
+            })
+    }
+}
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    fn report(sample: u64, viewer: u64, sequence: u64) -> ReceiverReport {
+        ReceiverReport {
+            track: 1,
+            viewer,
+            sample,
+            sequence,
+            media_us: 0,
+            buffered_ms: 0,
+            queued_bytes: 0,
+            lateness_ms: 0,
+            dropped: 0,
+            recoveries: 0,
+        }
+    }
+    #[test]
+    fn confirmation_must_be_newer_same_viewer_and_fresh() {
+        let t = Instant::now();
+        let mut w = RecoveryProgress::default();
+        w.observe(report(2, 7, 90), t);
+        assert!(w.obsolete(crate::RecoveryRequest::after(1, 7, 80), t));
+        assert!(!w.obsolete(
+            crate::RecoveryRequest::after(1, 7, 80),
+            t - Duration::from_millis(1)
+        ));
+        for r in [
+            crate::RecoveryRequest::after(1, 8, 80),
+            crate::RecoveryRequest::after(2, 7, 80),
+            crate::RecoveryRequest::after(1, 7, 90),
+            crate::RecoveryRequest::after(1, 7, 91),
+            crate::RecoveryRequest::after(1, 7, 0),
+        ] {
+            assert!(!w.obsolete(r, t));
+        }
+        assert!(!w.obsolete(
+            crate::RecoveryRequest::after(1, 7, 80),
+            t + Duration::from_millis(2001)
+        ));
+        assert!(!w.observe(report(2, 7, 100), t + Duration::from_secs(1)));
+        assert!(!w.observe(report(3, 7, 89), t + Duration::from_secs(1)));
+        let mut advanced = report(3, 7, 91);
+        advanced.dropped = 2;
+        advanced.recoveries = 1;
+        assert!(w.observe(advanced, t));
+        let mut rollback = report(4, 7, 92);
+        rollback.recoveries = 1;
+        assert!(!w.observe(rollback, t + Duration::from_secs(1)));
+        rollback.dropped = 2;
+        rollback.recoveries = 0;
+        assert!(!w.observe(rollback, t + Duration::from_secs(1)));
+        assert!(!w.obsolete(
+            crate::RecoveryRequest::after(1, 7, 80),
+            t + Duration::from_millis(2001)
+        ));
+    }
+    #[test]
+    fn bounded_window_eviction_cannot_prove_unknown_viewer_recovered() {
+        let t = Instant::now();
+        let mut w = RecoveryProgress::default();
+        for viewer in 0..9 {
+            assert!(w.observe(report(1, viewer, 10), t));
+        }
+        assert_eq!(w.entries.len(), 8);
+        assert!(!w.obsolete(crate::RecoveryRequest::after(1, 0, 5), t));
     }
 }

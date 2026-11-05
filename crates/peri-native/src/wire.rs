@@ -5,7 +5,7 @@ use crate::{Error, Object};
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PREFACE: &[u8; 8] = b"PERI\x00\x01\x00\x00";
+pub const PREFACE: &[u8; 8] = b"PERI\x00\x02\x00\x00";
 const MAX_CONTROL: usize = 16 * 1024;
 pub const MAX_PAYLOAD: usize = 1024 * 1024;
 const OBJECT_HEADER: usize = 25;

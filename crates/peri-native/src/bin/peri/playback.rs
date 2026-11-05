@@ -198,7 +198,9 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
         .ok_or("no AV1")?
         .clone();
     // Late join must request an independent unit rather than wait for the natural GOP.
-    subscriber.request_keyframe(track.id).await?;
+    subscriber
+        .request_keyframe_after(track.id, stats.played_sequence)
+        .await?;
     let mut buffer = DecodeBuffer::new(
         subscriber.catalog().clone(),
         &agreement,
@@ -261,13 +263,17 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 Some(frame) => frame,
                 None => {
                     stats.dropped += 1;
-                    subscriber.request_keyframe(track.id).await?;
+                    subscriber
+                        .request_keyframe_after(track.id, stats.played_sequence)
+                        .await?;
                     report_gap(&subscriber, track.id, &buffer, stats).await?;
                     if !waiting_key {
                         buffer.recover(track.id);
                         waiting_key = true;
                         stats.recoveries += 1;
-                        subscriber.request_keyframe(track.id).await?;
+                        subscriber
+                            .request_keyframe_after(track.id, stats.played_sequence)
+                            .await?;
                         report_gap(&subscriber, track.id, &buffer, stats).await?;
                         decoder.stop().await;
                         decoder = Decoder::new(&track).await?;
@@ -286,7 +292,9 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
             }
             if waiting_key && frame.kind != FrameKind::Key {
                 // The control layer rate-limits retries, including initial join.
-                subscriber.request_keyframe(track.id).await?;
+                subscriber
+                    .request_keyframe_after(track.id, stats.played_sequence)
+                    .await?;
                 report_gap(&subscriber, track.id, &buffer, stats).await?;
                 stats.dropped += 1;
                 continue;
@@ -307,7 +315,9 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 waiting_key = true;
                 stats.recoveries += 1;
                 stats.dropped += 1;
-                subscriber.request_keyframe(track.id).await?;
+                subscriber
+                    .request_keyframe_after(track.id, stats.played_sequence)
+                    .await?;
                 report_gap(&subscriber, track.id, &buffer, stats).await?;
                 decoder.stop().await;
                 decoder = Decoder::new(&track).await?;
@@ -344,7 +354,9 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             buffer.recover(track.id);
                             waiting_key = true;
                             stats.recoveries += 1;
-                            subscriber.request_keyframe(track.id).await?;
+                            subscriber
+                                .request_keyframe_after(track.id, stats.played_sequence)
+                                .await?;
                             report_gap(&subscriber, track.id, &buffer, stats).await?;
                             decoder.stop().await;
                             decoder = Decoder::new(&track).await?;
@@ -353,7 +365,9 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                         if buffer.decoded(frame.sequence, Instant::now()).is_err() {
                             waiting_key = true;
                             stats.recoveries += 1;
-                            subscriber.request_keyframe(track.id).await?;
+                            subscriber
+                                .request_keyframe_after(track.id, stats.played_sequence)
+                                .await?;
                             report_gap(&subscriber, track.id, &buffer, stats).await?;
                             decoder.stop().await;
                             decoder = Decoder::new(&track).await?;
@@ -442,7 +456,9 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                     }
                     Event::Recover { .. } => {
                         stats.recoveries += 1;
-                        subscriber.request_keyframe(track.id).await?;
+                        subscriber
+                            .request_keyframe_after(track.id, stats.played_sequence)
+                            .await?;
                         report_gap(&subscriber, track.id, &buffer, stats).await?;
                         waiting_key = true;
                         decoder.stop().await;

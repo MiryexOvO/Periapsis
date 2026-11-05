@@ -178,15 +178,25 @@ async fn push_publish_relay_fans_out_and_late_join_waits_for_key() -> Result<(),
     assert_eq!(first_viewer.recv(BUDGET).await?, resumed);
     assert_eq!(second_viewer.recv(BUDGET).await?, resumed);
     assert!(second_viewer.request_keyframe(99).await.is_err());
-    second_viewer.request_keyframe(1).await?;
+    // 清理先前取消对象的反馈，避免把旧请求误当作本次定位请求。
+    while source.poll_recovery()?.is_some() {}
+    tokio::time::sleep(Duration::from_millis(220)).await;
+    second_viewer.request_keyframe_after(1, 6).await?;
     let mut requested = false;
-    for sequence in 7..=20 {
+    for sequence in 7..=40 {
         let unit = frame(sequence, FrameKind::Key, vec![]);
         source.send(&unit, BUDGET).await?;
         assert_eq!(first_viewer.recv(BUDGET).await?, unit);
         assert_eq!(second_viewer.recv(BUDGET).await?, unit);
         tokio::time::sleep(Duration::from_millis(10)).await;
-        if source.poll_keyframe_request()? == Some(1) {
+        if let Some(request) = source.poll_recovery()?
+            && request.after_sequence == 6
+        {
+            assert_eq!(request.track, 1);
+            assert_eq!(
+                request.viewer, 1,
+                "Relay must assign the actual second subscriber scope"
+            );
             requested = true;
             break;
         }
@@ -393,7 +403,7 @@ async fn raw_peer_cannot_bypass_extension_preface_length_or_ack_validation() -> 
         );
         let raw = async {
             let (mut send, mut recv) = pair.outgoing.open_bi().await?;
-            let mut preface = *b"PERI\x00\x01\x00\x00";
+            let mut preface = *b"PERI\x00\x02\x00\x00";
             if scenario == 0 {
                 preface[5] = 99;
             }
@@ -551,6 +561,11 @@ async fn rejects_resource_codec_version_and_required_extension_mismatches() -> R
 
 #[tokio::test]
 async fn enforces_alpn_and_handshake_deadline() -> Result<(), TestError> {
+    let old = self::pair(b"peri-dev-01").await?;
+    assert!(matches!(
+        peri_native::subscribe(old.outgoing.clone(), hello(), "live/test", BUDGET).await,
+        Err(Error::Protocol("ALPN mismatch"))
+    ));
     let pair = pair(b"other-protocol").await?;
     assert!(matches!(
         peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET).await,
@@ -877,5 +892,30 @@ async fn shared_av1_fixture_crosses_native() -> Result<(), TestError> {
     assert_eq!(playback.frames, frames.len());
     writer.finish()?;
     println!("SHARED_AV1_NATIVE_FRAMES {}", frames.len());
+    Ok(())
+}
+
+/// 新恢复字段必须跨真实控制流保真，不能只在本地策略单元测试中生效。
+#[tokio::test]
+async fn recovery_position_crosses_real_quic() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (publisher, subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+    )?;
+    subscriber.request_keyframe_after(1, 42).await?;
+    let request = tokio::time::timeout(BUDGET, async {
+        loop {
+            if let Some(request) = publisher.poll_recovery() {
+                break request;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(request.track, 1);
+    assert_eq!(request.viewer, 0);
+    assert_eq!(request.after_sequence, 42);
+    assert!(request.id > 0);
     Ok(())
 }

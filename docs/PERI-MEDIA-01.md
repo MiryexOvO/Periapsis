@@ -1,6 +1,6 @@
 # PERI media-01 实验媒体配置
 
-media-01 建立在 [原生对象线协议](PERI-WIRE-01.md) 之上，由 `peri_native::media` 实现。
+media-01 建立在 [原生对象线协议](PERI-WIRE-02.md) 之上，由 `peri_native::media` 实现。
 底层 ALPN 和对象头不变；两端必须明确使用本配置的 API，不自动识别或回退到其他媒体格式。
 当前没有动态媒体配置协商、编码配置更新、跨资源时间同步或网络恢复反馈消息。
 

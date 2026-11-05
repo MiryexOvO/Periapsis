@@ -5,7 +5,7 @@
 
 ## 主动发布
 
-在原生实验 ALPN `peri-dev-01` 的控制流上新增 `peri.publish`：
+在原生实验 ALPN `peri-dev-02` 的控制流上新增 `peri.publish`：
 
 ```json
 {"type":"peri.publish","resource":"live/av1","hello":{"version":1,"profiles":["live"],"codecs":["video/av1"],"extensions":[]}}
