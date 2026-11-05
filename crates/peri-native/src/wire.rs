@@ -10,6 +10,42 @@ const MAX_CONTROL: usize = 16 * 1024;
 pub const MAX_PAYLOAD: usize = 1024 * 1024;
 const OBJECT_HEADER: usize = 25;
 
+// 流读取与修复后重组共用头部校验，避免两套长度/标志规则逐渐分叉。
+fn parse_header(bytes: &[u8; OBJECT_HEADER]) -> Result<(Object, usize), Error> {
+    let size = u32::from_be_bytes(bytes[21..25].try_into().expect("fixed header")) as usize;
+    if bytes[20] > 1 || size == 0 || size > MAX_PAYLOAD {
+        return Err(Error::Protocol("object header"));
+    }
+    Ok((
+        Object {
+            sequence: u64::from_be_bytes(bytes[..8].try_into().expect("fixed header")),
+            timestamp_us: u64::from_be_bytes(bytes[8..16].try_into().expect("fixed header")),
+            duration_us: u32::from_be_bytes(bytes[16..20].try_into().expect("fixed header")),
+            independent: bytes[20] == 1,
+            payload: Vec::new(),
+        },
+        size,
+    ))
+}
+
+pub(crate) fn decode_object_packet(bytes: &[u8]) -> Result<Object, Error> {
+    if bytes.len() > MAX_PAYLOAD + OBJECT_HEADER {
+        return Err(Error::Protocol("object packet limit"));
+    }
+    let header = bytes
+        .get(..OBJECT_HEADER)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+    let (mut object, size) = parse_header(header.try_into().expect("fixed header"))?;
+    if bytes.len() < OBJECT_HEADER + size {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
+    if bytes.len() > OBJECT_HEADER + size {
+        return Err(Error::Protocol("object trailing data"));
+    }
+    object.payload = bytes[OBJECT_HEADER..].to_vec();
+    Ok(object)
+}
+
 pub async fn write_control<W: AsyncWrite + Unpin, T: Serialize>(
     writer: &mut W,
     message: &T,
@@ -49,12 +85,14 @@ pub fn encode_object(object: &Object) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
+#[cfg(test)]
 pub async fn read_object<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Object, Error> {
     read_object_selected(reader, false)
         .await?
         .ok_or(Error::Protocol("object selection"))
 }
 
+#[cfg(test)]
 pub async fn read_object_selected<R: AsyncRead + Unpin>(
     reader: &mut R,
     independent_only: bool,
@@ -81,17 +119,12 @@ pub(crate) async fn read_object_observed<R: AsyncRead + Unpin>(
     independent_only: bool,
     progress: &mut ReadProgress,
 ) -> Result<Option<Object>, Error> {
-    let sequence = reader.read_u64().await?;
-    let timestamp_us = reader.read_u64().await?;
-    let duration_us = reader.read_u32().await?;
-    let flags = reader.read_u8().await?;
-    let size = reader.read_u32().await? as usize;
-    if flags > 1 || size == 0 || size > MAX_PAYLOAD {
-        return Err(Error::Protocol("object header"));
-    }
-    progress.sequence = Some(sequence);
+    let mut header = [0; OBJECT_HEADER];
+    reader.read_exact(&mut header).await?;
+    let (mut object, size) = parse_header(&header)?;
+    progress.sequence = Some(object.sequence);
     // 先校验长度和标志再跳过，防止恢复模式绕过头部边界检查；不分配旧参考负载。
-    if independent_only && flags == 0 {
+    if independent_only && !object.independent {
         progress.phase = "selected_out";
         return Ok(None);
     }
@@ -104,13 +137,8 @@ pub(crate) async fn read_object_observed<R: AsyncRead + Unpin>(
         return Err(Error::Protocol("object trailing data"));
     }
     progress.phase = "complete";
-    Ok(Some(Object {
-        sequence,
-        timestamp_us,
-        duration_us,
-        independent: flags == 1,
-        payload,
-    }))
+    object.payload = payload;
+    Ok(Some(object))
 }
 
 #[cfg(test)]

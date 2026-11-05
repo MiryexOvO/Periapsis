@@ -29,6 +29,7 @@ pub use feedback::{ReceiverReport, RecoveryRequest, trace};
 pub mod media;
 pub mod playback;
 pub mod relay;
+pub mod repair;
 mod wire;
 use peri_types::{Agreement, Hello};
 pub use quinn;
@@ -120,10 +121,7 @@ impl Object {
     }
     /// 解码完整对象包，拒绝超长、截断和尾随数据；不代表解码器确认。
     pub async fn decode_packet(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() > MAX_OBJECT_BYTES + 25 {
-            return Err(Error::Protocol("object packet limit"));
-        }
-        wire::read_object(&mut &bytes[..]).await
+        wire::decode_object_packet(bytes)
     }
 }
 
@@ -453,8 +451,12 @@ fn validate_local(
         return Err(Error::Protocol("invalid resource"));
     }
     peri_session::validate(hello).map_err(transport)?;
-    // 本阶段没有扩展执行能力，尤其不得宣称底层已启用多路径。
-    if !hello.extensions.is_empty() {
+    // 仅允许实际提供编码/重组内核的修复配置；仍不得宣称已实现多路径等其他扩展。
+    if hello
+        .extensions
+        .iter()
+        .any(|e| e.id != repair::EXTENSION_ID || e.version != 1)
+    {
         return Err(Error::Protocol("local extensions not implemented"));
     }
     Ok(())

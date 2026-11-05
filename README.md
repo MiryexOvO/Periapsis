@@ -49,3 +49,4 @@ Linux/macOS 使用 `./target/debug/peri`。
 全轨道恢复时的可选接收策略见[四路恢复接收候选](docs/PERI-RECEIVE-01.md)。
 发送端完成对象的候选调度策略见[按对象集中发送实验](docs/PERI-SEND-01.md)。
 底层确认频率与可观测统计见[频繁传输确认候选](docs/PERI-ACK-01.md)。
+可选对象修复的内核与接入边界见[有界修复配置](docs/PERI-REPAIR-01.md)。
