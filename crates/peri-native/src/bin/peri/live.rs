@@ -61,8 +61,15 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
             peri_native::adaptation::RateController::new(std::time::Instant::now());
         let mut desired_rate = 300000u32;
         let mut applied_rate = 300000u32;
-        let mut request: Option<peri_native::RecoveryRequest> = None;
-        let mut request_at = std::time::Instant::now();
+        let mut requests = Vec::<peri_native::RecoveryRequest>::new();
+        let mut progress = peri_native::adaptation::RecoveryProgress::default();
+        let suppress = match std::env::var("PERI_RECOVERY_SUPPRESS").as_deref() {
+            Ok("1") => true,
+            Ok("0") | Err(_) => false,
+            _ => return Err("PERI_RECOVERY_SUPPRESS must be 0 or 1".into()),
+        };
+        // 等待时间属于整批需求；同作用域合并时请求ID可能更新，不能解释为该ID的往返耗时。
+        let mut pending_at = std::time::Instant::now();
         let mut schedule = peri_native::adaptation::SwitchSchedule::default();
         let recovery_ms: u64 = std::env::var("PERI_RECOVERY_MS")
             .unwrap_or_else(|_| "1000".into())
@@ -73,20 +80,52 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
         let mut last_forced: Option<u64> = None;
         for index in 0..count {
             tokio::time::sleep_until(started + Duration::from_micros(index * 1_000_000 / 15)).await;
-            while let Some(received) = publisher.poll_recovery()? {
-                peri_native::trace("source_request", received);
-                if request.is_none() {
-                    request = Some(received);
-                    request_at = std::time::Instant::now();
-                }
-                recovery_pacer.request();
-            }
             if let Some(report) = publisher.poll_report()? {
                 peri_native::trace("source_report", report);
+                progress.observe(report, std::time::Instant::now());
                 if adaptive && let Some(rate) = controller.update(report, std::time::Instant::now())
                 {
                     desired_rate = rate;
                 }
+            }
+            while let Some(received) = publisher.poll_recovery()? {
+                peri_native::trace("source_request", received);
+                if suppress && progress.obsolete(received, std::time::Instant::now()) {
+                    peri_native::trace("source_request_stale", received);
+                    continue;
+                }
+                if requests.is_empty() {
+                    pending_at = std::time::Instant::now();
+                }
+                if let Some(old) = requests
+                    .iter_mut()
+                    .find(|r| r.track == received.track && r.viewer == received.viewer)
+                {
+                    let position = if old.after_sequence == 0 || received.after_sequence == 0 {
+                        0
+                    } else {
+                        old.after_sequence.max(received.after_sequence)
+                    };
+                    *old = received;
+                    old.after_sequence = position;
+                } else if requests.len() < 8 {
+                    requests.push(received);
+                }
+            }
+            if suppress {
+                requests.retain(|request| {
+                    if progress.obsolete(*request, std::time::Instant::now()) {
+                        peri_native::trace("source_request_stale", request);
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            if requests.is_empty() {
+                recovery_pacer.clear();
+            } else {
+                recovery_pacer.request();
             }
             let recovery = recovery_pacer.ready(std::time::Instant::now());
             let rate = if coalesced {
@@ -126,9 +165,9 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
                 applied_rate = rate;
                 peri_native::trace(
                     "encoder_response",
-                    serde_json::json!({"request":request,"sequence":index+1,"target_bps":applied_rate,"bytes":payload.len(),"request_wait_ms":request.map(|_|request_at.elapsed().as_millis()),"encoding_ms":encoding_started.elapsed().as_millis(),"switching":switching,"policy":if coalesced {"coalesced"} else {"legacy"}}),
+                    serde_json::json!({"request":requests.first().copied(),"coalesced_requests":requests.len(),"sequence":index+1,"target_bps":applied_rate,"bytes":payload.len(),"pending_wait_ms":requests.first().map(|_|pending_at.elapsed().as_millis()),"encoding_ms":encoding_started.elapsed().as_millis(),"switching":switching,"policy":if coalesced {"coalesced"} else {"legacy"}}),
                 );
-                request = None;
+                requests.clear();
                 recovery_pacer.encoded(std::time::Instant::now());
                 if recovery {
                     println!("PERI_KEYFRAME_RESPONSE {} {}", index + 1, payload.len());

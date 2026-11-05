@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, time::Duration};
 use tokio::io::AsyncWriteExt;
 
-pub const ALPN: &[u8] = b"peri-dev-01";
+pub const ALPN: &[u8] = b"peri-dev-02";
 pub const MAX_OBJECT_BYTES: usize = wire::MAX_PAYLOAD;
 
 #[derive(Debug)]
@@ -90,7 +90,13 @@ enum Control {
     #[serde(rename = "peri.ack")]
     Ack,
     #[serde(rename = "peri.keyframe")]
-    Keyframe { track: u16, origin: u32, id: u64 },
+    Keyframe {
+        track: u16,
+        origin: u32,
+        id: u64,
+        viewer: u64,
+        after_sequence: u64,
+    },
     #[serde(rename = "peri.receiver_report")]
     ReceiverReport { report: ReceiverReport },
 }
@@ -179,7 +185,20 @@ impl Session {
         if self.publisher {
             return Err(Error::Protocol("publisher cannot request keyframe"));
         }
-        self.feedback.request(RecoveryRequest::new(track)).await
+        self.request_keyframe_after(track, 0).await
+    }
+    /// 声明最后正常输出的位置；0表示未知，不能据此抑制恢复。
+    pub async fn request_keyframe_after(
+        &self,
+        track: u16,
+        after_sequence: u64,
+    ) -> Result<(), Error> {
+        if self.publisher {
+            return Err(Error::Protocol("publisher cannot request keyframe"));
+        }
+        self.feedback
+            .request(RecoveryRequest::after(track, 0, after_sequence))
+            .await
     }
     pub fn poll_keyframe_request(&self) -> Option<u16> {
         self.feedback.poll().map(|request| request.track)

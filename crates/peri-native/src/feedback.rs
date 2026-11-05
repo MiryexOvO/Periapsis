@@ -16,10 +16,20 @@ pub struct RecoveryRequest {
     pub track: u16,
     pub origin: u32,
     pub id: u64,
+    /// 转发节点分配的订阅者作用域，必须与接收报告对应。
+    pub viewer: u64,
+    /// 最后正常输出或已知故障的位置，0为未知，不允许据此推断已恢复。
+    pub after_sequence: u64,
 }
 impl RecoveryRequest {
     pub fn new(track: u16) -> Self {
+        Self::after(track, 0, 0)
+    }
+    /// 创建带作用域及位置的恢复请求；origin/id仅用于追踪，不作为认证。
+    pub fn after(track: u16, viewer: u64, after_sequence: u64) -> Self {
         Self {
+            viewer,
+            after_sequence,
             track,
             origin: std::process::id(),
             id: SERIAL.fetch_add(1, Ordering::Relaxed),
@@ -93,8 +103,20 @@ impl Feedback {
                     break;
                 }
                 match result {
-                    Ok(Control::Keyframe { track, origin, id }) if track > 0 && id > 0 => {
-                        let _ = tx.try_send(RecoveryRequest { track, origin, id });
+                    Ok(Control::Keyframe {
+                        track,
+                        origin,
+                        id,
+                        viewer,
+                        after_sequence,
+                    }) if track > 0 && id > 0 => {
+                        let _ = tx.try_send(RecoveryRequest {
+                            track,
+                            origin,
+                            id,
+                            viewer,
+                            after_sequence,
+                        });
                     }
                     Ok(Control::ReceiverReport { report }) if report.valid() => {
                         *output.lock().expect("reports") = Some((report, Instant::now()));
@@ -138,6 +160,8 @@ impl Feedback {
                 track: request.track,
                 origin: request.origin,
                 id: request.id,
+                viewer: request.viewer,
+                after_sequence: request.after_sequence,
             },
             false,
         )
@@ -180,9 +204,22 @@ impl Feedback {
             state.key = Some(Instant::now());
         }
         match message {
-            Control::Keyframe { track, origin, id } => {
-                trace("request_sent", RecoveryRequest { track, origin, id })
-            }
+            Control::Keyframe {
+                track,
+                origin,
+                id,
+                viewer,
+                after_sequence,
+            } => trace(
+                "request_sent",
+                RecoveryRequest {
+                    track,
+                    origin,
+                    id,
+                    viewer,
+                    after_sequence,
+                },
+            ),
             Control::ReceiverReport { report } => trace("report_sent", report),
             _ => {}
         }

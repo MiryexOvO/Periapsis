@@ -43,7 +43,7 @@ C++ SDK、OBS 插件或独立实现互通证明。现有 Rust/TypeScript 互通�
 - C ABI、SDK 发布、真实软件插件、原生音频播放同步与新线协议浏览器接入。
 - MPQUIC/P2P 当前为研发方向，没有已实现的可启用模块。
 
-第三方 Rust 接入步骤见[接入指南](PERI-INTEGRATION-01.md)，线格式见[协议草案](PERI-WIRE-01.md)。
+第三方 Rust 接入步骤见[接入指南](PERI-INTEGRATION-01.md)，线格式见[协议草案](PERI-WIRE-02.md)。
 
 ## 依赖边界
 

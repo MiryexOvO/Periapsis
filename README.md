@@ -5,7 +5,7 @@
 
 ## 当前能力
 
-- 独立实验 ALPN `peri-dev-01`，原生发布、订阅和单资源 Relay。
+- 独立实验 ALPN `peri-dev-02`，原生发布、订阅和单资源 Relay。
 - TLS 证书校验、独立发布/订阅凭据、能力协商和有界对象传输。
 - 媒体目录、帧依赖、实际解码确认、截止时间和关键帧恢复反馈。
 - AV1 文件与实时测试源、原生观看和录制工具。
@@ -41,7 +41,7 @@ Linux/macOS 使用 `./target/debug/peri`。
 
 - [模块表](docs/PERI-MODULES.md)
 - [Rust 接入指南](docs/PERI-INTEGRATION-01.md)
-- [实验线协议](docs/PERI-WIRE-01.md)
+- [实验线协议](docs/PERI-WIRE-02.md)
 - [媒体配置](docs/PERI-MEDIA-01.md)
 
 仓库中的开发脚本和历史实验不是对外 SDK 或正式接入入口。

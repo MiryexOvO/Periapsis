@@ -321,6 +321,19 @@ impl Subscriber {
         }
         self.session.request_keyframe(track).await
     }
+    /// 带最后正常输出序号请求关键帧，位置未知时传0。
+    pub async fn request_keyframe_after(
+        &self,
+        track: u16,
+        after_sequence: u64,
+    ) -> Result<(), Error> {
+        if self.catalog.track(track)?.kind != TrackKind::Video {
+            return Err(Error::Protocol("keyframe requested for audio"));
+        }
+        self.session
+            .request_keyframe_after(track, after_sequence)
+            .await
+    }
     pub async fn forward_recovery(&self, request: crate::RecoveryRequest) -> Result<(), Error> {
         if self.catalog.track(request.track)?.kind != TrackKind::Video {
             return Err(Error::Protocol("recovery requires video"));
