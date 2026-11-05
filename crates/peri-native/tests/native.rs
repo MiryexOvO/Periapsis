@@ -9,6 +9,406 @@ use support::pair;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 const BUDGET: Duration = Duration::from_secs(3);
+
+#[tokio::test]
+async fn frequent_ack_requests_cross_real_quic_and_preserve_objects() -> Result<(), TestError> {
+    let pair = support::pair_with_ack(ALPN, true).await?;
+    let (publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+    )?;
+    for sequence in 1..=8 {
+        let object = Object {
+            sequence,
+            timestamp_us: sequence * 66667,
+            duration_us: 66667,
+            independent: sequence == 1,
+            payload: vec![sequence as u8; 8192],
+        };
+        let (_, received) =
+            tokio::try_join!(publisher.send(&object, BUDGET), subscriber.recv(BUDGET))?;
+        assert_eq!(received, object);
+    }
+    tokio::time::timeout(BUDGET, async {
+        loop {
+            let sender = publisher.transport_stats();
+            let receiver = subscriber.transport_stats();
+            if sender.frame_tx.ack_frequency > 0
+                && sender.frame_rx.ack_frequency > 0
+                && receiver.frame_tx.ack_frequency > 0
+                && receiver.frame_rx.ack_frequency > 0
+            {
+                assert!(receiver.frame_tx.acks > 0);
+                assert!(receiver.udp_tx.bytes > 0);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+/// 外层取消不能退回默认STOP码；三种串行接口都须使用局部放弃码1。
+#[tokio::test]
+async fn serial_receive_cancellation_stops_one_and_keeps_next_object() -> Result<(), TestError> {
+    for mode in 0..3 {
+        let pair = pair(ALPN).await?;
+        let (publisher, mut subscriber) = tokio::try_join!(
+            peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+            peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+        )?;
+        let mut partial = pair.incoming.open_uni().await?;
+        partial.write_all(&[0]).await?;
+        let read = async {
+            match mode {
+                0 => subscriber.recv(BUDGET).await.map(Some),
+                1 => {
+                    subscriber
+                        .recv_live(BUDGET, Duration::from_millis(800))
+                        .await
+                }
+                _ => {
+                    subscriber
+                        .recv_recovery(BUDGET, Duration::from_millis(800))
+                        .await
+                }
+            }
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), read)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            tokio::time::timeout(BUDGET, partial.stopped()).await??,
+            Some(1u32.into())
+        );
+        let object = Object {
+            sequence: 2,
+            timestamp_us: 0,
+            duration_us: 66667,
+            independent: true,
+            payload: vec![42],
+        };
+        let (_, got) = tokio::try_join!(publisher.send(&object, BUDGET), subscriber.recv(BUDGET))?;
+        assert_eq!(got, object);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn retained_receive_rejects_observed_bad_headers_and_releases_slots() -> Result<(), TestError>
+{
+    let pair = pair(ALPN).await?;
+    let (publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+    )?;
+    let mut blocked = pair.incoming.open_uni().await?;
+    blocked.write_all(&[0]).await?;
+    let mut invalid = pair.incoming.open_uni().await?;
+    let mut header = vec![0; 25];
+    header[20] = 2;
+    invalid.write_all(&header).await?;
+    invalid.finish()?;
+    assert!(matches!(
+        subscriber
+            .recv_retained(BUDGET, Duration::from_millis(500), true)
+            .await,
+        Err(Error::Protocol("object header"))
+    ));
+    assert_eq!(
+        tokio::time::timeout(BUDGET, blocked.stopped()).await??,
+        Some(1u32.into())
+    );
+    let key = Object {
+        sequence: 3,
+        timestamp_us: 0,
+        duration_us: 66667,
+        independent: true,
+        payload: vec![42],
+    };
+    let (_, received) = tokio::try_join!(publisher.send(&key, BUDGET), subscriber.recv(BUDGET))?;
+    assert_eq!(received, key);
+    Ok(())
+}
+
+/// 参考帧先于关键帧完成；胜出时必须保留更晚流的完整负载和部分负载。
+#[tokio::test]
+async fn retained_receive_preserves_successors_in_order() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (_publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+    )?;
+    let object = |sequence, independent| Object {
+        sequence,
+        timestamp_us: sequence * 66667,
+        duration_us: 66667,
+        independent,
+        payload: vec![sequence as u8; 100],
+    };
+    let mut old = pair.incoming.open_uni().await?;
+    old.write_all(&[0]).await?;
+    let key = object(2, true);
+    let key_bytes = key.encode_packet()?;
+    let mut key_stream = pair.incoming.open_uni().await?;
+    key_stream.write_all(&key_bytes[..30]).await?;
+    let reference = object(3, false);
+    let mut complete = pair.incoming.open_uni().await?;
+    complete.write_all(&reference.encode_packet()?).await?;
+    complete.finish()?;
+    let partial_object = object(4, false);
+    let partial_bytes = partial_object.encode_packet()?;
+    let mut partial = pair.incoming.open_uni().await?;
+    partial.write_all(&partial_bytes[..30]).await?;
+    let fill_key = async {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        key_stream.write_all(&key_bytes[30..]).await?;
+        key_stream.finish()?;
+        Ok::<_, TestError>(())
+    };
+    let (_, received) = tokio::try_join!(fill_key, async {
+        Ok::<_, TestError>(
+            subscriber
+                .recv_retained(BUDGET, Duration::from_millis(500), true)
+                .await?,
+        )
+    })?;
+    assert_eq!(received, Some(key));
+    assert_eq!(old.stopped().await?, Some(1u32.into()));
+    assert!(matches!(
+        subscriber.recv(BUDGET).await,
+        Err(Error::Protocol("pending retained receive"))
+    ));
+    assert_eq!(
+        subscriber
+            .recv_retained(BUDGET, Duration::from_millis(150), false)
+            .await?,
+        Some(reference)
+    );
+    partial.write_all(&partial_bytes[30..]).await?;
+    partial.finish()?;
+    assert_eq!(
+        subscriber
+            .recv_retained(BUDGET, Duration::from_millis(150), false)
+            .await?,
+        Some(partial_object)
+    );
+    assert_eq!(complete.stopped().await?, None);
+    assert_eq!(partial.stopped().await?, None);
+    Ok(())
+}
+
+/// 跨调用不刷新驻留期限；外层取消、格式错误及清空均须释放保留窗口。
+#[tokio::test]
+async fn retained_receive_expires_and_cancels_retained_streams() -> Result<(), TestError> {
+    for scenario in 0..3 {
+        let pair = pair(ALPN).await?;
+        let (_publisher, mut subscriber) = tokio::try_join!(
+            peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+            peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+        )?;
+        let key = Object {
+            sequence: 1,
+            timestamp_us: 0,
+            duration_us: 66667,
+            independent: true,
+            payload: vec![42; 100],
+        };
+        let bytes = key.encode_packet()?;
+        let mut key_stream = pair.incoming.open_uni().await?;
+        key_stream.write_all(&bytes[..30]).await?;
+        let mut next = pair.incoming.open_uni().await?;
+        if scenario == 2 {
+            let expired = Object {
+                sequence: 2,
+                independent: false,
+                ..key.clone()
+            };
+            next.write_all(&expired.encode_packet()?).await?;
+            next.finish()?;
+        } else {
+            next.write_all(&[0]).await?;
+        }
+        let fill_key = async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            key_stream.write_all(&bytes[30..]).await?;
+            key_stream.finish()?;
+            Ok::<_, TestError>(())
+        };
+        let (_, received) = tokio::try_join!(fill_key, async {
+            Ok::<_, TestError>(
+                subscriber
+                    .recv_retained(BUDGET, Duration::from_millis(150), true)
+                    .await?,
+            )
+        })?;
+        assert_eq!(received, Some(key));
+        if scenario == 1 {
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(20),
+                    subscriber.recv_retained(BUDGET, Duration::from_millis(800), false)
+                )
+                .await
+                .is_err()
+            );
+        } else {
+            tokio::time::sleep(Duration::from_millis(160)).await;
+            assert_eq!(
+                subscriber
+                    .recv_retained(BUDGET, Duration::from_millis(800), false)
+                    .await?,
+                None
+            );
+        }
+        let stopped = tokio::time::timeout(BUDGET, next.stopped()).await??;
+        assert_eq!(
+            stopped,
+            if scenario == 2 {
+                None
+            } else {
+                Some(1u32.into())
+            }
+        );
+        subscriber.clear_retained_receive();
+        assert!(matches!(
+            subscriber.recv(Duration::from_millis(10)).await,
+            Err(Error::Timeout)
+        ));
+    }
+    Ok(())
+}
+
+/// 三条旧流停在头部，第四条完整独立帧无需等待旧流驻留到期。
+#[tokio::test]
+async fn concurrent_recovery_bypasses_stalled_headers_and_stops_losers() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (publisher, mut subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+    )?;
+    let mut stalled = Vec::new();
+    for _ in 0..3 {
+        let mut stream = pair.incoming.open_uni().await?;
+        stream.write_all(&[0]).await?;
+        stalled.push(stream);
+    }
+    let key = Object {
+        sequence: 4,
+        timestamp_us: 0,
+        duration_us: 66667,
+        independent: true,
+        payload: vec![42; 100],
+    };
+    let receipt = publisher.start_send(&key, BUDGET).await?;
+    let received = tokio::time::timeout(
+        Duration::from_millis(250),
+        subscriber.recv_recovery_concurrent(BUDGET, Duration::from_millis(800)),
+    )
+    .await??;
+    assert_eq!(received, Some(key));
+    for stream in stalled {
+        assert_eq!(
+            tokio::time::timeout(BUDGET, stream.stopped()).await??,
+            Some(1u32.into())
+        );
+    }
+    receipt.finish().await?;
+    Ok(())
+}
+
+/// 四槽已满不接受第五条；超时/外层取消均同步STOP，后续正常读取不受污染。
+#[tokio::test]
+async fn concurrent_recovery_caps_slots_and_cleans_up_on_cancellation() -> Result<(), TestError> {
+    for cancel in [false, true] {
+        let pair = pair(ALPN).await?;
+        let (publisher, mut subscriber) = tokio::try_join!(
+            peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+            peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+        )?;
+        let mut stalled = Vec::new();
+        for _ in 0..4 {
+            let mut stream = pair.incoming.open_uni().await?;
+            stream.write_all(&[0]).await?;
+            stalled.push(stream);
+        }
+        let key = Object {
+            sequence: 5,
+            timestamp_us: 0,
+            duration_us: 66667,
+            independent: true,
+            payload: vec![43],
+        };
+        let receipt = publisher.start_send(&key, BUDGET).await?;
+        if cancel {
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(50),
+                    subscriber.recv_recovery_concurrent(BUDGET, Duration::from_millis(800))
+                )
+                .await
+                .is_err()
+            );
+        } else {
+            assert!(matches!(
+                subscriber
+                    .recv_recovery_concurrent(Duration::from_millis(50), Duration::from_millis(800))
+                    .await,
+                Err(Error::Timeout)
+            ));
+        }
+        for stream in stalled {
+            assert_eq!(
+                tokio::time::timeout(BUDGET, stream.stopped()).await??,
+                Some(1u32.into())
+            );
+        }
+        assert_eq!(subscriber.recv(BUDGET).await?, key);
+        receipt.finish().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_recovery_preserves_framing_errors_and_residence() -> Result<(), TestError> {
+    for scenario in 0..6 {
+        let pair = pair(ALPN).await?;
+        let (_publisher, mut subscriber) = tokio::try_join!(
+            peri_native::accept(pair.incoming.clone(), hello(), "live/test", BUDGET),
+            peri_native::subscribe(pair.outgoing.clone(), hello(), "live/test", BUDGET)
+        )?;
+        let mut stream = pair.incoming.open_uni().await?;
+        let mut header = vec![0; 25];
+        header[20] = 1;
+        header[21..25]
+            .copy_from_slice(&(if scenario == 0 { u32::MAX } else { 3u32 }).to_be_bytes());
+        stream.write_all(&header).await?;
+        match scenario {
+            0 | 1 => {
+                stream.write_all(&[1]).await?;
+                stream.finish()?;
+            }
+            2 => stream.reset(1u32.into())?,
+            3 => stream.reset(2u32.into())?,
+            5 => {
+                stream.write_all(&[1, 2, 3]).await?;
+            } // 完整负载但无FIN仍不得交付。
+            _ => {}
+        }
+        let result = subscriber
+            .recv_recovery_concurrent(BUDGET, Duration::from_millis(30))
+            .await;
+        match scenario {
+            0 => assert!(matches!(result, Err(Error::Protocol("object header")))),
+            1 | 3 => assert!(matches!(result, Err(Error::Io(_)))),
+            _ => assert_eq!(result?, None),
+        }
+    }
+    Ok(())
+}
 #[tokio::test]
 async fn protected_endpoint_enforces_bearer_role_and_rejects_anonymous_clients()
 -> Result<(), TestError> {
@@ -181,27 +581,33 @@ async fn push_publish_relay_fans_out_and_late_join_waits_for_key() -> Result<(),
     // 清理先前取消对象的反馈，避免把旧请求误当作本次定位请求。
     while source.poll_recovery()?.is_some() {}
     tokio::time::sleep(Duration::from_millis(220)).await;
+    // 让接入端停在半个媒体对象上。恢复必须无需下一帧即可往返，且唤醒不能丢掉已读前缀。
+    let pending = frame(7, FrameKind::Key, vec![]);
+    let bytes = pending.to_object(first_viewer.catalog())?.encode_packet()?;
+    let mut partial = incoming.outgoing.open_uni().await?;
+    partial.write_all(&bytes[..30]).await?;
+    tokio::time::sleep(Duration::from_millis(30)).await;
     second_viewer.request_keyframe_after(1, 6).await?;
-    let mut requested = false;
-    for sequence in 7..=40 {
-        let unit = frame(sequence, FrameKind::Key, vec![]);
-        source.send(&unit, BUDGET).await?;
-        assert_eq!(first_viewer.recv(BUDGET).await?, unit);
-        assert_eq!(second_viewer.recv(BUDGET).await?, unit);
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        if let Some(request) = source.poll_recovery()?
-            && request.after_sequence == 6
-        {
-            assert_eq!(request.track, 1);
-            assert_eq!(
-                request.viewer, 1,
-                "Relay must assign the actual second subscriber scope"
-            );
-            requested = true;
-            break;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(request) = source.poll_recovery()?
+                && request.after_sequence == 6
+            {
+                assert_eq!(request.track, 1);
+                assert_eq!(
+                    request.viewer, 1,
+                    "Relay must assign the actual second subscriber scope"
+                );
+                break Ok::<_, TestError>(());
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
-    }
-    assert!(requested, "viewer request must reach source through relay");
+    })
+    .await??;
+    partial.write_all(&bytes[30..]).await?;
+    partial.finish()?;
+    assert_eq!(first_viewer.recv(BUDGET).await?, pending);
+    assert_eq!(second_viewer.recv(BUDGET).await?, pending);
     first_viewer
         .send_report(peri_native::ReceiverReport {
             track: 1,

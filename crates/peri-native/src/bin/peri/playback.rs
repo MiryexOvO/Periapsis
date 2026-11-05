@@ -66,6 +66,7 @@ pub async fn probe(bytes: &[u8]) -> Result<Vec<u8>, Error> {
 
 #[derive(Default)]
 struct Stats {
+    transport: Option<serde_json::Value>,
     started: Option<Instant>,
     first_frame_ms: Option<u128>,
     decoded: u32,
@@ -153,6 +154,7 @@ pub async fn play(args: &[String]) -> Result<(), Error> {
         println!(
             "PERI_PLAY_DONE {}",
             serde_json::json!({
+                "transport":stats.transport,
                 "playback_ms":playback_ms,"freeze_count":stats.freeze_count,
                 "freeze_ratio":if playback_ms>0 {stats.freeze_ms as f64/playback_ms as f64} else {0.0},
                 "output_fps":if playback_ms>0 {f64::from(stats.decoded.saturating_sub(1))*1000.0/playback_ms as f64} else {0.0},
@@ -174,6 +176,24 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
     }
     let headless = args[5..].iter().any(|a| a == "--headless");
     let fifo = args[5..].iter().any(|a| a == "--fifo");
+    // 高频阶段追踪仅用于研发诊断，默认关闭，恢复原因仍沿用低频事件日志。
+    let trace_stages = match std::env::var("PERI_PLAYBACK_TRACE").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Err(_) => false,
+        _ => return Err("PERI_PLAYBACK_TRACE must be 0 or 1".into()),
+    };
+    // 候选恢复接收策略默认关闭，正常播放仍维持有序串行读取。
+    let concurrent_recovery = match std::env::var("PERI_RECOVERY_CONCURRENCY").as_deref() {
+        Ok("4") => true,
+        Ok("1") | Err(_) => false,
+        _ => return Err("PERI_RECOVERY_CONCURRENCY must be 1 or 4".into()),
+    };
+    let retain_receive = match std::env::var("PERI_RECEIVE_RETAIN").as_deref() {
+        Ok("1") if concurrent_recovery => true,
+        Ok("1") => return Err("PERI_RECEIVE_RETAIN requires PERI_RECOVERY_CONCURRENCY=4".into()),
+        Ok("0") | Err(_) => false,
+        _ => return Err("PERI_RECEIVE_RETAIN must be 0 or 1".into()),
+    };
     let token = std::env::var("PERI_SUBSCRIBE_TOKEN")?;
     let (_endpoint, connection) = connect(&args[0], &args[1], &args[2]).await?;
     let session =
@@ -252,13 +272,39 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 return Err("decoder made no progress for 10 seconds".into());
             }
             // 参考链失效后跳过旧依赖负载，避免旧对象反复占满读取预算。
-            let received = if waiting_key {
-                subscriber.recv_recovery(SETUP, recovery_residence).await?
+            let receive_started = Instant::now();
+            let received = if retain_receive {
+                subscriber
+                    .recv_retained(
+                        SETUP,
+                        if waiting_key {
+                            recovery_residence
+                        } else {
+                            Duration::from_millis(150)
+                        },
+                        waiting_key,
+                    )
+                    .await?
+            } else if waiting_key {
+                if concurrent_recovery {
+                    subscriber
+                        .recv_recovery_concurrent(SETUP, recovery_residence)
+                        .await?
+                } else {
+                    subscriber.recv_recovery(SETUP, recovery_residence).await?
+                }
             } else {
                 subscriber
                     .recv_live(SETUP, Duration::from_millis(150))
                     .await?
             };
+            // 只记录阶段耗时和帧号，不记录媒体负载；空结果是本地放弃，不等同于网络丢包。
+            if trace_stages {
+                peri_native::trace(
+                    "player_receive",
+                    serde_json::json!({"sequence":received.as_ref().map(|f|f.sequence),"waiting_key":waiting_key,"elapsed_ms":receive_started.elapsed().as_millis()}),
+                );
+            }
             let frame = match received {
                 Some(frame) => frame,
                 None => {
@@ -268,6 +314,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                         .await?;
                     report_gap(&subscriber, track.id, &buffer, stats).await?;
                     if !waiting_key {
+                        recovery_trace("receive_abandoned", stats, None);
                         buffer.recover(track.id);
                         waiting_key = true;
                         stats.recoveries += 1;
@@ -310,6 +357,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 && frame.dependencies.iter().any(|id| *id > previous)
                 && frame.kind == FrameKind::Reference
             {
+                recovery_trace("missing_dependency", stats, Some(frame.sequence));
                 previous = frame.sequence;
                 buffer.recover(track.id);
                 waiting_key = true;
@@ -347,10 +395,29 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             (target + Duration::from_millis(120))
                                 .saturating_duration_since(Instant::now())
                         };
-                        if !matches!(
-                            tokio::time::timeout(budget, decoder.decode(&frame)).await,
-                            Ok(Ok(()))
-                        ) {
+                        let decode_started = Instant::now();
+                        let decoded = tokio::time::timeout(budget, decoder.decode(&frame)).await;
+                        let outcome = match &decoded {
+                            Ok(Ok(())) => "ok",
+                            Ok(Err(_)) => "error",
+                            Err(_) => "timeout",
+                        };
+                        if trace_stages {
+                            peri_native::trace(
+                                "player_decode",
+                                serde_json::json!({"sequence":frame.sequence,"key":frame.kind==FrameKind::Key,"elapsed_ms":decode_started.elapsed().as_millis(),"budget_ms":budget.as_millis(),"outcome":outcome}),
+                            );
+                        }
+                        if !matches!(decoded, Ok(Ok(()))) {
+                            recovery_trace(
+                                if outcome == "timeout" {
+                                    "decode_timeout"
+                                } else {
+                                    "decode_error"
+                                },
+                                stats,
+                                Some(frame.sequence),
+                            );
                             buffer.recover(track.id);
                             waiting_key = true;
                             stats.recoveries += 1;
@@ -363,6 +430,11 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                             break;
                         }
                         if buffer.decoded(frame.sequence, Instant::now()).is_err() {
+                            recovery_trace(
+                                "decode_confirmation_expired",
+                                stats,
+                                Some(frame.sequence),
+                            );
                             waiting_key = true;
                             stats.recoveries += 1;
                             subscriber
@@ -455,6 +527,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                         stats.dropped += 1;
                     }
                     Event::Recover { .. } => {
+                        recovery_trace("buffer_recovery", stats, None);
                         stats.recoveries += 1;
                         subscriber
                             .request_keyframe_after(track.id, stats.played_sequence)
@@ -470,10 +543,26 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
         Ok::<_, Error>(())
     };
     let result = operation.await;
+    // 只保存最后一次观看连接的计数；重连前的累计值不在此快照中。
+    let quic = subscriber.transport_stats();
+    stats.transport = Some(serde_json::json!({
+        "scope":"last-viewer-connection", "ack_frequency_tx":quic.frame_tx.ack_frequency,
+        "ack_frequency_rx":quic.frame_rx.ack_frequency,"acks_tx":quic.frame_tx.acks,"acks_rx":quic.frame_rx.acks,
+        "udp_tx_bytes":quic.udp_tx.bytes,"udp_rx_bytes":quic.udp_rx.bytes,
+        "rtt_ms":quic.path.rtt.as_millis(),"sent_packets":quic.path.sent_packets,"lost_packets":quic.path.lost_packets
+    }));
     decoder.stop().await;
     if let Some(display) = display.as_mut() {
         let _ = display.kill().await;
         let _ = display.wait().await;
     }
     result
+}
+
+// 恢复原因与最后实际输出位置分开保存；不能以收到对象或传输确认冒充播放成功。
+fn recovery_trace(reason: &str, stats: &Stats, sequence: Option<u64>) {
+    peri_native::trace(
+        "player_recovery",
+        serde_json::json!({"reason":reason,"sequence":sequence,"after_sequence":stats.played_sequence}),
+    );
 }

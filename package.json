@@ -7,6 +7,7 @@
     "typescript": "5.9.3"
   },
   "scripts": {
+    "native:freeze:check": "node --experimental-strip-types scripts/native-freeze-check.ts",
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "native:live:check": "node --experimental-strip-types scripts/native-live-check.ts",

@@ -47,6 +47,26 @@ fn read_bounded(path: &str, limit: usize) -> Result<Vec<u8>, Error> {
 }
 fn transport() -> Result<Arc<quinn::TransportConfig>, Error> {
     let mut config = quinn::TransportConfig::default();
+    // 默认沿用同优先级流轮转；候选0按写入顺序集中发送，减少参考帧负载交错。
+    // 仅影响相同优先级；独立对象的较高优先级、拥塞控制和截止时间保持有效。
+    let fairness = match std::env::var("PERI_SEND_FAIRNESS").as_deref() {
+        Ok("0") => false,
+        Ok("1") | Err(_) => true,
+        _ => return Err("PERI_SEND_FAIRNESS must be 0 or 1".into()),
+    };
+    config.send_fairness(fairness);
+    // 仅请求对端调整确认频率；不支持扩展的对端会忽略，不能冒充已协商成功。
+    match std::env::var("PERI_ACK_MODE").as_deref() {
+        Ok("frequent") => {
+            let mut ack = quinn::AckFrequencyConfig::default();
+            ack.ack_eliciting_threshold(0u32.into())
+                .max_ack_delay(Some(Duration::from_millis(1)))
+                .reordering_threshold(1u32.into());
+            config.ack_frequency_config(Some(ack));
+        }
+        Ok("default") | Err(_) => {}
+        _ => return Err("PERI_ACK_MODE must be default or frequent".into()),
+    }
     config.max_concurrent_bidi_streams(1_u32.into());
     config.max_concurrent_uni_streams(8_u32.into());
     config.stream_receive_window((1024 * 1024 + 128_u32).into());

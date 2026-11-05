@@ -1,4 +1,5 @@
 import { profiles, seededRandom } from "./network-profiles.ts";
+import { analyzeFreezes } from "./freeze-analysis.ts";
 import dgram from "node:dgram";
 import { reserveDatagram } from "./network-queue.ts";
 import { spawn } from "node:child_process";
@@ -20,7 +21,7 @@ await mkdir(resolve(root, "dist"), { recursive: true });
 const directory = await mkdtemp(resolve(root, "dist/live-check-"));
 const binary = resolve(process.env.CARGO_TARGET_DIR ?? resolve(root, "target"), "debug", process.platform === "win32" ? "peri.exe" : "peri");
 const publishToken = randomBytes(24).toString("hex"), subscribeToken = randomBytes(24).toString("hex");
-const environment: NodeJS.ProcessEnv = { ...process.env, PERI_PUBLISH_TOKEN: publishToken, PERI_SUBSCRIBE_TOKEN: subscribeToken };
+const environment: NodeJS.ProcessEnv = { ...process.env, PERI_PLAYBACK_TRACE: "1", PERI_PUBLISH_TOKEN: publishToken, PERI_SUBSCRIBE_TOKEN: subscribeToken };
 const children: ReturnType<typeof start>[] = [];
 function start(command: string, args: string[], env: NodeJS.ProcessEnv = environment) {
   const child = spawn(command, args, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -154,6 +155,7 @@ try {
       const traces=[...phases,...viewer.state.output.split(/\r?\n/),...server.state.output.split(/\r?\n/)]
         .filter(line=>line.startsWith("PERI_TRACE ")).map(line=>JSON.parse(line.slice(11))).filter(event=>event.wall_ms>=traceStart).sort((a,b)=>a.wall_ms-b.wall_ms);
       await writeFile(resolve(directory,`trace-${round}-${mode}.jsonl`),traces.map(event=>JSON.stringify(event)).join("\n")+"\n");
+      await writeFile(resolve(directory,`freeze-${round}-${mode}.json`),JSON.stringify(analyzeFreezes(traces),null,2));
       const inputs=new Map(traces.filter(event=>event.event==="source_input").map(event=>[event.data.sequence,event.wall_ms]));
       const deltas=traces.filter(event=>event.event==="frame_output" && inputs.has(event.data.sequence)).map(event=>event.wall_ms-inputs.get(event.data.sequence)!);
       const negativeClockSamples=deltas.filter(value=>value<0).length;
@@ -164,8 +166,10 @@ try {
       if (!Number.isFinite(summary.first_frame_ms) || summary.first_frame_ms < 0) throw new Error("missing first-frame timing");
       const subsecond={targetMs:1000,joinPass:summary.first_frame_ms<1000,softwarePass:softwareLatency.maxMs<1000 && negativeClockSamples===0,continuityPass:summary.max_gap_ms<1000,pass:summary.first_frame_ms<1000 && softwareLatency.maxMs<1000 && summary.max_gap_ms<1000 && negativeClockSamples===0};
       if (!phases.some(line=>line.includes('source_report'))) throw new Error("receiver telemetry did not reach encoder");
-      proxyReports.push({ round, mode, softwareLatency,subsecond, targets:[...new Set(rates.map(rate=>rate.target))], rateSwitches:publisher.state.output.split("PERI_RATE_SWITCH").length-1, encodeMeanUs:Math.round(rates.reduce((total,rate)=>total+rate.encodeUs,0)/rates.length),encodeP95Us:rates.map(rate=>rate.encodeUs).sort((a,b)=>a-b)[Math.floor((rates.length-1)*0.95)], encodedBytes:rates.reduce((total,rate)=>total+rate.bytes,0), profile: { recoverySuppress:environment.PERI_RECOVERY_SUPPRESS ?? "0", rateControl:environment.PERI_RATE_CONTROL ?? "vbr", name:profileName, seed:20261104+round, config:profile, recoveryReadMs:Number(environment.PERI_RECOVERY_READ_MS ?? 300), recoveryMs:Number(environment.PERI_RECOVERY_MS ?? 1000), maxIntraPct:Number(environment.PERI_MAX_INTRA_PCT ?? 0), queueModel: "admitted-datagrams-v2", downstreamBytesPerSecond: profile.bytesPerSecond, delayMs: profile.delayMs, durationMs: profile.durationMs }, packets, lost, wireBytes, trialMs:Math.round(performance.now()-started), peakQueuedDatagrams: peak, ...summary });
+      proxyReports.push({ round, mode, softwareLatency,subsecond, targets:[...new Set(rates.map(rate=>rate.target))], rateSwitches:publisher.state.output.split("PERI_RATE_SWITCH").length-1, encodeMeanUs:Math.round(rates.reduce((total,rate)=>total+rate.encodeUs,0)/rates.length),encodeP95Us:rates.map(rate=>rate.encodeUs).sort((a,b)=>a-b)[Math.floor((rates.length-1)*0.95)], encodedBytes:rates.reduce((total,rate)=>total+rate.bytes,0), profile: { ackMode:environment.PERI_ACK_MODE ?? "default", sendFairness:environment.PERI_SEND_FAIRNESS ?? "1", receiveRetain:environment.PERI_RECEIVE_RETAIN ?? "0", recoveryConcurrency:environment.PERI_RECOVERY_CONCURRENCY ?? "1", recoverySuppress:environment.PERI_RECOVERY_SUPPRESS ?? "0", rateControl:environment.PERI_RATE_CONTROL ?? "vbr", name:profileName, seed:20261104+round, config:profile, recoveryReadMs:Number(environment.PERI_RECOVERY_READ_MS ?? 300), recoveryMs:Number(environment.PERI_RECOVERY_MS ?? 1000), maxIntraPct:Number(environment.PERI_MAX_INTRA_PCT ?? 0), queueModel: "admitted-datagrams-v2", downstreamBytesPerSecond: profile.bytesPerSecond, delayMs: profile.delayMs, durationMs: profile.durationMs }, packets, lost, wireBytes, trialMs:Math.round(performance.now()-started), peakQueuedDatagrams: peak, ...summary });
       await writeFile(resolve(directory,"network-report.json"),JSON.stringify(proxyReports,null,2));
+      // 同版本双端实验必须实际看到请求收发；生产中不支持扩展的对端仍可降级运行。
+      if(environment.PERI_ACK_MODE==="frequent" && !(summary.transport?.ack_frequency_rx>0 && summary.transport?.ack_frequency_tx>0)) throw new Error("ACK frequency requests were not observed on the viewer connection");
       console.log(`PERI_TRIAL_DONE ${profileName} ${mode} gap=${summary.max_gap_ms} freeze=${summary.freeze_ms}`);
     } finally { for (const timer of timers) clearTimeout(timer); downstream.close(); upstream.close(); }
   }
