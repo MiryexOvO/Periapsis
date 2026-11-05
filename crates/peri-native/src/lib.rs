@@ -23,6 +23,9 @@
 pub mod adaptation;
 pub mod auth;
 pub mod av1;
+mod deadline;
+mod send;
+pub use send::ObjectSend;
 mod feedback;
 mod receive;
 pub use feedback::{ReceiverReport, RecoveryRequest, trace};
@@ -132,57 +135,6 @@ impl Drop for ConnectionGuard {
     }
 }
 
-struct PendingSend {
-    stream: quinn::SendStream,
-    complete: bool,
-    sequence: u64,
-    reason: &'static str,
-}
-impl Drop for PendingSend {
-    fn drop(&mut self) {
-        if !self.complete {
-            trace(
-                "object_send_cancel",
-                serde_json::json!({"stream":self.stream.id().index(),"sequence":self.sequence,"reason":self.reason}),
-            );
-            let _ = self.stream.reset(1u32.into());
-        }
-    }
-}
-
-/// A queued object whose transport acknowledgement is still pending.
-/// Dropping it cancels only this object stream; this is never a decode receipt.
-pub struct ObjectSend {
-    pending: PendingSend,
-    _slot: tokio::sync::OwnedSemaphorePermit,
-    deadline: tokio::time::Instant,
-}
-impl ObjectSend {
-    /// Await transport acknowledgement within the original budget and release the slot.
-    pub async fn finish(mut self) -> Result<(), Error> {
-        let outcome = tokio::time::timeout_at(self.deadline, async {
-            if let Some(code) = self.pending.stream.stopped().await.map_err(|error| {
-                self.pending.reason = "ack_error";
-                transport(error)
-            })? {
-                self.pending.reason = "peer_stop";
-                return Err(if code == 1u32.into() {
-                    Error::ObjectAborted
-                } else {
-                    Error::Protocol("object rejected by peer")
-                });
-            }
-            self.pending.complete = true;
-            Ok(())
-        })
-        .await;
-        if outcome.is_err() {
-            self.pending.reason = "ack_deadline";
-        }
-        outcome.map_err(|_| Error::Timeout)?
-    }
-}
-
 /// Hold one negotiated resource and its control stream for the connection lifetime.
 /// 每连接协商一个资源，保留控制流；释放时关闭连接，调用方必须独占连接所有权。
 pub struct Session {
@@ -265,49 +217,19 @@ impl Session {
     /// The budget includes both queuing and acknowledgement; callers must finish or drop.
     /// 预算包含排队和确认等待；句柄持有有界发送槽，调用方必须完成或释放。
     pub async fn start_send(&self, object: &Object, budget: Duration) -> Result<ObjectSend, Error> {
+        self.start_send_until(object, deadline::Deadline::after(budget)?)
+            .await
+    }
+
+    pub(crate) async fn start_send_until(
+        &self,
+        object: &Object,
+        deadline: deadline::Deadline,
+    ) -> Result<ObjectSend, Error> {
         if !self.publisher {
             return Err(Error::Protocol("subscriber cannot publish"));
         }
-        let deadline = tokio::time::Instant::now() + budget;
-        let slot = tokio::time::timeout_at(deadline, self.send_slots.clone().acquire_owned())
-            .await
-            .map_err(|_| Error::Timeout)?
-            .map_err(transport)?;
-        let bytes = wire::encode_object(object)?;
-        let stream = tokio::time::timeout_at(deadline, self.guard.0.open_uni())
-            .await
-            .map_err(|_| Error::Timeout)?
-            .map_err(transport)?;
-        // Independent objects unblock decoding. Prioritize their unsent bytes
-        // over dependent media without changing congestion control or deadlines.
-        // 独立对象可恢复解码，优先调度其未发送字节；拥塞控制和截止时间仍有效。
-        stream
-            .set_priority(if object.independent { 10 } else { 0 })
-            .map_err(transport)?;
-        let mut pending = PendingSend {
-            stream,
-            complete: false,
-            sequence: object.sequence,
-            reason: "write_cancelled",
-        };
-        tokio::time::timeout_at(deadline, async {
-            AsyncWriteExt::write_all(&mut pending.stream, &bytes).await.map_err(|error| {
-                if matches!(error.get_ref().and_then(|e| e.downcast_ref::<quinn::WriteError>()), Some(quinn::WriteError::Stopped(code)) if *code == 1u32.into()) {
-                    pending.reason="peer_stop";
-                    Error::ObjectAborted
-                } else { pending.reason="write_error"; Error::Io(error) }
-            })?;
-            pending.stream.finish().map_err(transport)?;
-            Ok::<_, Error>(())
-        })
-        .await
-        .map_err(|_| {pending.reason="write_deadline"; Error::Timeout})??;
-        pending.reason = "ack_wait_cancelled";
-        Ok(ObjectSend {
-            pending,
-            _slot: slot,
-            deadline,
-        })
+        send::start(&self.guard.0, self.send_slots.clone(), object, deadline).await
     }
 
     /// Live receive: bound an accepted object's residence separately from idle waiting.

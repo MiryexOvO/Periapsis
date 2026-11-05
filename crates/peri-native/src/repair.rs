@@ -1,5 +1,8 @@
 //! 可选对象修复内核：有界分片、单丢片异或恢复、完整性验证和冗余字节预算。
-//! 不自动读取QUIC流、不宣称解码成功；Relay与正式播放器尚未接入此负载配置。
+//! 媒体层在协商后通过有界适配器接入；重组成功不表示解码成功。
+//! Negotiated media uses bounded transport adapters; reconstruction is not decode confirmation.
+pub(crate) mod transport;
+
 use crate::{Error, Object, wire};
 use peri_types::{Agreement, Extension};
 use std::{
@@ -379,6 +382,17 @@ pub struct Assembler {
     limits: Limits,
 }
 impl Assembler {
+    // 取消时保留重放历史，防止迟到片重开已放弃组。
+    // Preserve replay history when cancelling outstanding groups.
+    pub(crate) fn cancel(&mut self) {
+        for group in std::mem::take(&mut self.groups) {
+            self.remember(group.header.group);
+        }
+        self.reserved = 0;
+    }
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.groups.iter().map(|group| group.deadline).min()
+    }
     pub fn reserved_bytes(&self) -> usize {
         self.reserved
     }
@@ -420,6 +434,17 @@ impl Assembler {
             return Ok(Admission::Stale);
         }
         if deadline <= now {
+            // 已读出的迟到首片也必须终结组，后续片不得换一个期限重新开启。
+            // A fully read but late first shard retires the group; later shards cannot restart it.
+            if let Some(index) = self
+                .groups
+                .iter()
+                .position(|group| group.header.group == id)
+            {
+                let group = self.groups.remove(index);
+                self.reserved -= group.header.reservation();
+            }
+            self.remember(id);
             return Ok(Admission::Expired);
         }
         let index = match self.groups.iter().position(|g| g.header.group == id) {
@@ -486,6 +511,27 @@ mod tests {
                 .map(|i| ((i * i + 17 * i + sequence as usize) % 251) as u8)
                 .collect(),
         }
+    }
+    // 最早片已超期时，较晚接纳的片不能让同一组续命。
+    // Once the earliest shard is late, newly accepted shards cannot revive its group.
+    #[test]
+    fn late_first_shard_retires_group_before_admission() {
+        let codec = codec();
+        let now = Instant::now();
+        let parts = codec.split(&object(1, 2000), 1024).unwrap();
+        let mut assembler = codec.assembler(Limits::default()).unwrap();
+        assert_eq!(
+            assembler.push(parts[0].clone(), now, now).unwrap(),
+            Admission::Expired
+        );
+        assert_eq!(
+            assembler
+                .push(parts[1].clone(), now, now + Duration::from_millis(100))
+                .unwrap(),
+            Admission::Stale
+        );
+        assert_eq!(assembler.pending_groups(), 0);
+        assert_eq!(assembler.reserved_bytes(), 0);
     }
     #[test]
     fn every_single_erasure_and_parity_loss_recovers_exact_object() {

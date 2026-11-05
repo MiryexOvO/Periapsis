@@ -32,7 +32,13 @@ fn hello() -> Hello {
         version: PERI_VERSION,
         profiles: vec![Profile::Live],
         codecs: vec!["video/av1".into(), "audio/opus".into()],
-        extensions: vec![],
+        // 实验开关只提供可选能力；双方接受后媒体层才启用适配器。
+        // Offer optional repair only for experiments; media adapters require mutual agreement.
+        extensions: if std::env::var("PERI_REPAIR").as_deref() == Ok("1") {
+            vec![peri_native::repair::capability(false)]
+        } else {
+            vec![]
+        },
     }
 }
 fn read_bounded(path: &str, limit: usize) -> Result<Vec<u8>, Error> {

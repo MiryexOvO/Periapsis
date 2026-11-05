@@ -1,26 +1,48 @@
 //! 恢复阶段的有界并发对象读取；不创建后台任务，不负责媒体依赖调度。
-use crate::{Error, Object, transport, wire};
+use crate::{Error, Object, deadline::Deadline, transport, wire};
 use std::{future::Future, pin::Pin, task::Poll, time::Duration};
 
+// 终结原因只在流保护器中记录，日志保持原有字段和取值。
+// Record termination in the stream guard; trace fields and values stay compatible.
+enum ReadEnd {
+    Cancelled,
+    Complete,
+    Failed,
+    Expired,
+    PeerStopped,
+    Filtered,
+}
+impl ReadEnd {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Complete => "complete",
+            Self::Failed => "read_error",
+            Self::Expired => "residence_timeout",
+            Self::PeerStopped => "peer_reset_1",
+            Self::Filtered => "selected_out",
+        }
+    }
+}
 // 关键帧胜出、错误或调用future取消时，都使用约定的局部放弃码，不能默认STOP(0)。
 struct PendingRead {
     stream: quinn::RecvStream,
     progress: wire::ReadProgress,
-    reason: &'static str,
+    end: ReadEnd,
 }
 impl Drop for PendingRead {
     fn drop(&mut self) {
         // 正常完成不重复输出；其余原因均为本地观察，不能单凭RESET推断远端触发原因。
-        if self.reason != "complete" {
+        if !matches!(self.end, ReadEnd::Complete) {
             crate::trace(
                 "object_read_end",
-                serde_json::json!({"stream":self.stream.id().index(),"sequence":self.progress.sequence,"phase":self.progress.phase,"reason":self.reason}),
+                serde_json::json!({"stream":self.stream.id().index(),"sequence":self.progress.sequence,"phase":self.progress.phase,"reason":self.end.reason()}),
             );
         }
         let _ = self.stream.stop(1u32.into());
     }
 }
-type Read = Pin<Box<dyn Future<Output = Result<Option<Object>, Error>> + Send + Sync>>;
+pub(crate) type Read = Pin<Box<dyn Future<Output = Result<Option<Object>, Error>> + Send + Sync>>;
 pub(crate) async fn serial(
     stream: quinn::RecvStream,
     residence: Duration,
@@ -32,49 +54,62 @@ pub(crate) async fn strict(stream: quinn::RecvStream) -> Result<Object, Error> {
     let mut pending = PendingRead {
         stream,
         progress: wire::ReadProgress::default(),
-        reason: "cancelled",
+        end: ReadEnd::Cancelled,
     };
     let result =
         wire::read_object_observed(&mut pending.stream, false, &mut pending.progress).await;
-    pending.reason = if result.is_ok() {
-        "complete"
+    pending.end = if result.is_ok() {
+        ReadEnd::Complete
     } else {
-        "read_error"
+        ReadEnd::Failed
     };
     result?.ok_or(Error::Protocol("object selection"))
 }
-fn read(stream: quinn::RecvStream, residence: Duration, independent_only: bool) -> Read {
+pub(crate) fn read(stream: quinn::RecvStream, residence: Duration, independent_only: bool) -> Read {
+    // 驻留期限在接纳时确定，不随future首次被poll的时刻重算。
+    // Fix residence at admission, not at the future's first poll.
+    match Deadline::after(residence) {
+        Ok(deadline) => read_until(stream, deadline, independent_only),
+        Err(error) => {
+            let mut stream = stream;
+            let _ = stream.stop(1u32.into());
+            Box::pin(async { Err(error) })
+        }
+    }
+}
+pub(crate) fn read_until(
+    stream: quinn::RecvStream,
+    deadline: Deadline,
+    independent_only: bool,
+) -> Read {
     let mut pending = PendingRead {
         stream,
         progress: wire::ReadProgress::default(),
-        reason: "cancelled",
+        end: ReadEnd::Cancelled,
     };
-    let deadline = tokio::time::Instant::now() + residence;
     Box::pin(async move {
-        let result = match tokio::time::timeout_at(
-            deadline,
-            wire::read_object_observed(
+        let result = match deadline
+            .run(wire::read_object_observed(
                 &mut pending.stream,
                 independent_only,
                 &mut pending.progress,
-            ),
-        )
-        .await
+            ))
+            .await
         {
             Err(_) => {
-                pending.reason = "residence_timeout";
+                pending.end = ReadEnd::Expired;
                 Ok(None)
             }
             Ok(Err(Error::Io(error))) if matches!(error.get_ref().and_then(|e|e.downcast_ref::<quinn::ReadError>()),Some(quinn::ReadError::Reset(code)) if *code==1u32.into()) =>
             {
-                pending.reason = "peer_reset_1";
+                pending.end = ReadEnd::PeerStopped;
                 Ok(None)
             }
             Ok(result) => {
-                pending.reason = match &result {
-                    Ok(Some(_)) => "complete",
-                    Ok(None) => "selected_out",
-                    Err(_) => "read_error",
+                pending.end = match &result {
+                    Ok(Some(_)) => ReadEnd::Complete,
+                    Ok(None) => ReadEnd::Filtered,
+                    Err(_) => ReadEnd::Failed,
                 };
                 result
             }
@@ -249,7 +284,8 @@ pub(crate) async fn retained(
             stream=connection.accept_uni(), if guard.state.slots.len()<4 => {
                 let stream=stream.map_err(transport)?;
                 let stream_id=stream.id().index();
-                guard.state.slots.push(Slot {stream:stream_id,read:Some(read(stream,residence,false)),result:None,deadline:tokio::time::Instant::now()+residence});
+                let residence_deadline = Deadline::after(residence)?;
+                guard.state.slots.push(Slot {stream:stream_id,read:Some(read_until(stream,residence_deadline,false)),result:None,deadline:residence_deadline.instant().into()});
             },
             _=tokio::time::sleep_until(deadline) => return Err(Error::Timeout),
         }

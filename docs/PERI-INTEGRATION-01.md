@@ -78,3 +78,25 @@ GopScheduler::push返回ResetDecoder时必须取消旧任务；decoded只在实�
 多轨道音视频同步、网络接收并发及网络读前配额仍由应用负责，单视频调度器不提供这些能力。
 
 Handshake::transport_ready()为无参数的本地就绪通知；调用方必须先验证传输身份与版本。状态名为TransportReady，不再暴露具体外部传输实现。
+
+## 可选修复媒体通路
+
+在双方Hello加入peri_native::repair::capability(false)，以实际Agreement决定是否启用。
+Publisher/Subscriber在构造时识别共同扩展，Relay逐跳协商，不要求调用方自行拆解修复片。
+原始Session对象接口保持底层语义，不自动进入该媒体配置。默认CLI关闭，实验开关PERI_REPAIR=1。
+协商修复后各Subscriber收帧入口共用四槽重组器，恢复过滤改为还原后检查，
+不再具有原始recv_recovery的头部跳过负载行为，也不叠加retained的有序接收算法。
+组间ACK等待与原始读取1MiB上限仍存在；完整配额、计时和性能边界见PERI-REPAIR-01。
+
+## 对象发送期限
+
+Session::start_send的预算覆盖槽等待、写入和ObjectSend::finish的确认等待。
+句柄保存原始绝对截止时间；延后调用finish不会取得新的预算，已有ACK也不能使过期调用成功。
+零预算返回Timeout且不开流，无法表示的超长预算返回Protocol("deadline overflow")。
+取消未完成句柄时RESET(1)并释放发送槽。ObjectSend仍可从peri_native根路径导入。
+修复分片调用同一发送执行器，逐片沿用组的原始截止时间。
+
+2026-11-06期限重构验证：工作区92项Rust测试通过（另1项外部AV1夹具按原规则跳过），严格Clippy通过。
+默认关闭修复的short/fixed单轮实际播放完成60帧、零重连，报告位于dist/live-check-j9Mlay。
+该运行软件延迟P95为310ms、最大313ms，但最大输出间隔2396ms，连续性亚秒条件失败。
+运行用于收发链路回归，未开启严格亚秒门禁；不能据此宣称冻结减少或修复候选通过弱网验收。

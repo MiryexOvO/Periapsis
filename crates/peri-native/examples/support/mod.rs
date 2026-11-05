@@ -23,6 +23,16 @@ pub async fn pair_with_ack(
     alpn: &[u8],
     frequent: bool,
 ) -> Result<Pair, Box<dyn std::error::Error + Send + Sync>> {
+    pair_with_stream_window(alpn, frequent, None).await
+}
+
+/// 限制接收窗口以稳定复现写入阻塞，避免依赖机器速度制造背压。
+/// Limit stream credit to reproduce blocked writes without relying on machine speed.
+pub async fn pair_with_stream_window(
+    alpn: &[u8],
+    frequent: bool,
+    window: Option<u32>,
+) -> Result<Pair, Box<dyn std::error::Error + Send + Sync>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
     let der = cert.cert.der().clone();
@@ -32,6 +42,9 @@ pub async fn pair_with_ack(
         .with_single_cert(vec![der.clone()], key.into())?;
     tls.alpn_protocols = vec![alpn.to_vec()];
     let mut transport = quinn::TransportConfig::default();
+    if let Some(window) = window {
+        transport.stream_receive_window(window.into());
+    }
     if frequent {
         let mut ack = quinn::AckFrequencyConfig::default();
         ack.ack_eliciting_threshold(0u32.into())
