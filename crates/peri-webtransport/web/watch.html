@@ -1,0 +1,111 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>PERI 直播</title>
+<style>*{box-sizing:border-box}body{margin:0;background:#101114;color:#eee;font:16px system-ui}
+main{width:min(100%,2560px);margin:auto}video{display:block;width:100%;height:min(100dvh,56.25vw);
+background:#000;object-fit:contain}p{margin:12px 16px}</style>
+<style>[hidden]{display:none!important}canvas{display:block;width:100%;max-height:100dvh;object-fit:contain;background:#000}</style><main><canvas hidden></canvas><button id="sound" hidden>开启声音</button><video controls playsinline muted autoplay></video>
+<p><label>画质 <select id="quality"><option value="source">原画</option><option value="720">720p60 · 流畅</option></select></label></p>
+<p role="status">正在连接直播…</p></main>
+<script src="/hls.light.min.js"></script><script src="/peri-webtransport.js"></script><script>
+const v=document.querySelector('video'),statusLine=document.querySelector('[role=status]');
+let retry;
+v.onplaying=()=>{clearTimeout(retry);statusLine.textContent=(v.dataset.transport==='webtransport'?'直播中 · WebTransport':'直播中')+(v.muted?' · 可开启声音':'')};
+v.onvolumechange=()=>{if(!v.paused) v.onplaying()};
+const wtConfig=__PERI_WT_CONFIG__;
+const quality=document.querySelector('#quality');
+let recoverUntil=0;
+v.onwaiting=()=>{
+  statusLine.textContent='正在等待直播画面…';
+  if(quality.value==='source' && v.currentTime>0){
+    v.playbackRate=1;
+    recoverUntil=performance.now()+8000;
+  }
+};
+// Drain only continuous buffered media; keep extra headroom after a stall.
+// 仅消化连续缓冲中的积压；卡顿后暂时多留一些缓冲。
+v.preservesPitch=true;
+v.ontimeupdate=()=>{
+  if(v.paused || v.seeking) return;
+  const time=v.currentTime;
+  for(let i=0;i<v.buffered.length;i++){
+    if(time<v.buffered.start(i) || time>=v.buffered.end(i)) continue;
+    const lead=v.buffered.end(i)-time;
+    const stable=quality.value==='source' && performance.now()>=recoverUntil;
+    const high=stable?0.42:0.65, low=stable?0.26:0.40;
+    if(lead>high) v.playbackRate=stable && lead>0.8?1.08:1.04;
+    else if(lead<low) v.playbackRate=1;
+    else if(v.playbackRate===1.08) v.playbackRate=1.04;
+    return;
+  }
+  v.playbackRate=1;
+};
+const nativeHls=!!v.canPlayType('application/vnd.apple.mpegurl');
+const mseHls=window.Hls && Hls.isSupported();
+const appleMobile=/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+const canSource=(window.VideoDecoder && window.WebTransport && wtConfig.url) || !!v.canPlayType('video/webm; codecs="av01.0.12M.08,opus"');
+quality.options[0].disabled=!canSource;
+quality.options[1].disabled=!nativeHls && !mseHls;
+quality.value=(appleMobile || !canSource) && !quality.options[1].disabled?'720':'source';
+
+let hls, wtStop, startup, generation=0;
+function tune(useWT=true){
+  const session=++generation;
+  recoverUntil=0;
+  clearTimeout(retry);
+  clearTimeout(startup);
+  v.onerror=v.onended=null;
+  if(wtStop){wtStop();wtStop=null;}
+  if(hls){hls.destroy();hls=null;}
+  v.removeAttribute('src');
+  v.load();
+  v.playbackRate=1;
+  if(quality.selectedOptions[0].disabled){
+    statusLine.textContent='当前浏览器没有可用的直播格式。';
+    return;
+  }
+  const low=quality.value==='720';
+  statusLine.textContent=low?'正在准备 720p60…':'正在连接原画…';
+  function reconnect(){
+    if(session!==generation) return;
+    clearTimeout(retry);
+    clearTimeout(startup);
+    statusLine.textContent='直播暂时不可用，正在重新连接…';
+    retry=setTimeout(tune,3000);
+  }
+  function play(){
+    v.play().catch(error=>{
+      if(session===generation && error.name==='NotAllowedError')
+        statusLine.textContent='请点播放器的播放按钮开始观看。';
+    });
+  }
+  v.onerror=v.onended=reconnect;
+  // Prefer native HLS on Apple devices. Other desktops can use Media Source.
+  // 苹果设备优先使用原生 HLS，其他桌面浏览器可通过 Media Source 播放。
+  if(useWT && !appleMobile && window.periWebTransport){
+    const fallback=()=>{if(session===generation) tune(false)};
+    try{wtStop=periWebTransport(v,wtConfig,low,fallback);}catch{wtStop=null;}
+    if(wtStop){
+      v.onerror=v.onended=fallback;
+      v.dataset.transport='webcodecs';
+      statusLine.textContent='正在连接 WebTransport…';
+      return;
+    }
+  }
+  v.dataset.transport=low?'hls':'http-webm';
+  if(low && mseHls && !(appleMobile && nativeHls)){
+    hls=new Hls({lowLatencyMode:true});
+    hls.on(Hls.Events.ERROR,(_,data)=>{if(data.fatal) reconnect()});
+    hls.on(Hls.Events.MANIFEST_PARSED,play);
+    hls.loadSource('/mobile/live.m3u8');
+    hls.attachMedia(v);
+  }else{
+    v.src=low?'/mobile/live.m3u8':'/live.webm';
+    play();
+  }
+  startup=setTimeout(()=>{if(v.readyState<2 && !v.error)
+    statusLine.textContent='仍未收到画面，请检查直播或切换画质。'},15000);
+}
+quality.onchange=()=>tune();
+tune();
+</script></html>

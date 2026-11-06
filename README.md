@@ -11,9 +11,9 @@
 - AV1 文件与实时测试源、原生观看和录制工具。
 
 项目仍处于研发阶段，尚无稳定 SDK/API 兼容承诺。
-Windows OBS 脚本支持 peri:// 推流码，服务器可提供共享网页视频预览。
+Windows OBS 原生插件通过 C ABI 调用 Rust 发布库。Rust 网关向浏览器提供 WebTransport 和 WebCodecs 播放。
 AV1 + Opus 双轨开发入口和浏览器观看步骤见[节目音视频接入](docs/PERI-PROGRAM-AV.md)。
-原生音频同步、浏览器低延迟优化和多路径功能仍在研发中。
+网关支持原画与共享 720p60，HTTP 兼容观看使用 WebM 或 LL-HLS。
 亚秒是验收目标，不保证任意网络下达标；测量范围见[延迟说明](docs/PERI-LATENCY-01.md)。
 
 ## 构建与运行

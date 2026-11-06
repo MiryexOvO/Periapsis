@@ -1,13 +1,15 @@
 [Unit]
-Description=PERI shared web preview
-After=peri-relay.service
+Description=PERI native WebCodecs and WebTransport viewer
+After=network.target peri-relay.service
 Wants=peri-relay.service
 
 [Service]
 DynamicUser=yes
 PrivateTmp=yes
 EnvironmentFile=/etc/peri/viewer.env
-ExecStart=/usr/bin/python3 /opt/peri/web-preview.py 127.0.0.1:4444 localhost /etc/peri/cert.der live/av1 --peri /opt/peri/bin/peri --follow
+LoadCredential=viewer.json:/etc/peri/viewer.json
+Environment=PERI_CONFIG=%d/viewer.json
+ExecStart=/opt/peri/bin/peri-webtransport watch
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes

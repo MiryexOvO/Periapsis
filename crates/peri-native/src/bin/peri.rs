@@ -1,6 +1,7 @@
 //! Separate-process native PERI relay, file publisher and recorder.
 //! 可分进程运行的原生 PERI Relay、文件发布与录制命令。
 
+#[cfg(feature = "test-encoder")]
 #[path = "peri/live.rs"]
 mod live;
 #[path = "peri/playback.rs"]
@@ -384,6 +385,7 @@ async fn main() -> Result<(), Error> {
         Some("init") if args.len() == 2 => init(&args[1]),
         Some("relay") if args.len() == 5 => relay(&args[1..]).await,
         Some("publish") if (7..=8).contains(&args.len()) => publish(&args[1..]).await,
+        #[cfg(feature = "test-encoder")]
         Some("live") if args.len() == 7 => live::run(&args[1..]).await,
         Some(mode @ ("av-publish" | "av-subscribe")) if args.len() == 5 => {
             program::run(&args[1..], mode == "av-publish").await
@@ -392,7 +394,7 @@ async fn main() -> Result<(), Error> {
         Some("play") if (6..=8).contains(&args.len()) => playback::play(&args[1..]).await,
         Some("--help") | None => {
             println!(
-                "peri av-publish|av-subscribe ADDRESS SERVER_NAME TRUST.der RESOURCE (local binary adapter)\nperi init DIR\nperi relay BIND CERT.der KEY.key RESOURCE\nperi publish ADDRESS SERVER_NAME TRUST.der RESOURCE INPUT.ivf (--all-intra|--gop) [--loop]\nperi receive ADDRESS SERVER_NAME TRUST.der RESOURCE OUTPUT.ivf COUNT\nperi play ADDRESS SERVER_NAME TRUST.der RESOURCE COUNT [--headless|--preview] [--fifo]\nperi live ADDRESS SERVER_NAME TRUST.der RESOURCE WORKER.py COUNT\nCredentials: PERI_PUBLISH_TOKEN / PERI_SUBSCRIBE_TOKEN"
+                "peri av-publish|av-subscribe ADDRESS SERVER_NAME TRUST.der RESOURCE (local binary adapter)\nperi init DIR\nperi relay BIND CERT.der KEY.key RESOURCE\nperi publish ADDRESS SERVER_NAME TRUST.der RESOURCE INPUT.ivf (--all-intra|--gop) [--loop]\nperi receive ADDRESS SERVER_NAME TRUST.der RESOURCE OUTPUT.ivf COUNT\nperi play ADDRESS SERVER_NAME TRUST.der RESOURCE COUNT [--headless|--preview] [--fifo]\nCredentials: PERI_PUBLISH_TOKEN / PERI_SUBSCRIBE_TOKEN"
             );
             Ok(())
         }
