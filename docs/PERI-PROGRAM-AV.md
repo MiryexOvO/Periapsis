@@ -4,7 +4,7 @@
 
 ## 配置和启动服务器
 
-在仓库根目录运行一次 `python3 scripts/peri-server.py setup`。IPv4 可直接回车采用 0.0.0.0，随后填写 Relay UDP 和网页 TCP 端口。使用通配地址时，生成推流码可用 link --public-ip 指定主播能访问的 IPv4。首次可选 new 生成证书和私钥；使用已有证书时填写与之配套的私钥。替换证书后请重新生成并分发主播邀请。有效凭据自动复用，缺失、无效或重复的令牌自动补齐；配置中断后重跑可选用已生成的证书对，配置，保存于当前账户的 ~/.config/peri/server.json。
+首次运行 `python3 scripts/peri-server.py setup`。监听地址默认 0.0.0.0，推流码默认 stream。服务器配置保存在 ~/.config/peri/server.json。已有配置直接使用；要修改推流码，运行 `python3 scripts/peri-server.py stream-key` 并重启 Relay。任何知道服务器地址和推流码的人都可以尝试发布，公网直播宜自定义推流码。
 
 ~~~sh
 python3 scripts/peri-server.py relay
@@ -12,7 +12,7 @@ python3 scripts/peri-server.py watch
 python3 scripts/peri-server.py link
 ~~~
 
-在不同终端用同一账户运行 Relay 和观看服务；link 输出私有 OBS 邀请。默认两项服务监听 0.0.0.0，向客户端公布相同的端口。对外端口不同时，setup 支持 --public-udp 和 --public-tcp。旧配置在首次使用新入口时自动迁移。手动运行 program-av.py watch 时，传入 0.0.0.0:端口 会自动监听所有 IPv4 接口，并通过回环连接本机 Relay；--bind 可单独指定网页监听地址。
+在不同终端用同一账户运行 Relay 和观看服务；link 显示服务器和推流码两栏。默认 UDP 4444 可省略；其他端口写为 peri://IP:端口。配置为 0.0.0.0 时直接显示监听地址模板，远程 OBS 将其换为主播可访问的 IP。默认两项服务监听 0.0.0.0，向客户端公布相同的端口。对外端口不同时，setup 支持 --public-udp 和 --public-tcp。旧配置在首次使用新入口时自动迁移。手动运行 program-av.py watch 时，传入 0.0.0.0:端口 会自动监听所有 IPv4 接口，并通过回环连接本机 Relay；--bind 可单独指定网页监听地址。
 
 ## 手动启动
 
@@ -29,7 +29,7 @@ python scripts/program-av.py watch 127.0.0.1:4444 localhost ./cert.der live/av1 
 ## 主播
 
 1. 在 Windows OBS 的高级输出设置中选择自定义 FFmpeg 录制输出，输出类型选择 URL，地址为 tcp://127.0.0.1:4455，容器选择 webm。使用低延迟 AV1 视频（关闭前瞻和帧重排，建议关键帧间隔一秒），Opus 音频选定含节目混音的轨道，48 kHz 单声道或立体声。当前适配器接受最大 1920×1080；建议先用 320×180 或 640×360 验证。此步骤会占用 OBS 录制输出，先保存常用配置。
-2. 加载配套 obs-periapsis/peri_publish.py，填写开发环境路径并粘贴发布专用 peri:// 推流码。勾选「节目画面 + 混音（本机 WebM 输出）」，点击「开始 PERI 推流」，再在 OBS 点击「开始录制」，把节目送进本机适配器。该模式不使用虚拟摄像机。
+2. 加载配套 obs-periapsis/peri_publish.py，填写服务器与推流码，在高级设置选择从该 Relay 安全复制的 cert.der，资源名和证书服务器名与服务器配置一致。勾选「节目画面 + 混音（本机 WebM 输出）」，点击「开始 PERI 推流」，再在 OBS 点击「开始录制」，把节目送进本机适配器。该模式不使用虚拟摄像机。
 3. 观众打开观看页并点击播放。停播先停止录制，再停止 PERI 推流。重新开播后重新载入观看页。节目输入分辨率或音轨参数变化时应重启发布会话。
 
 ## 开发验证
