@@ -27,6 +27,7 @@ mod deadline;
 mod send;
 pub use send::ObjectSend;
 mod feedback;
+pub use feedback::trace_to_stderr;
 mod receive;
 pub use feedback::{ReceiverReport, RecoveryRequest, trace};
 pub mod media;
