@@ -89,7 +89,8 @@ impl Decoder {
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            // 诊断模式保留 FFmpeg 原始错误。 / Keep FFmpeg errors visible when tracing.
+            .stderr(if trace { Stdio::inherit() } else { Stdio::null() })
             .spawn()?;
         if trace {
             eprintln!("PERI_DECODER spawn_us={}", started.elapsed().as_micros());
