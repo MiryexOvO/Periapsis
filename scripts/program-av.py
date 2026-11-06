@@ -7,6 +7,7 @@ from fractions import Fraction
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import queue
 from pathlib import Path
 import struct
 import subprocess
@@ -41,8 +42,8 @@ def publish(args):
                        width=v.width, height=v.height, sample_rate=None, channels=None),
                   dict(id=2, kind="audio", codec="audio/opus", init=list(a.extradata or b""),
                        width=None, height=None, sample_rate=a.sample_rate, channels=a.channels)]
-        if not (0 < v.width <= 1920 and 0 < v.height <= 1080):
-            raise ValueError("program dimensions exceed 1920x1080")
+        if not (0 < v.width <= 2560 and 0 < v.height <= 1440):
+            raise ValueError("program dimensions exceed 2560x1440")
         if a.channels not in (1, 2):
             raise ValueError("expected mono or stereo program audio")
         catalog = json.dumps(dict(tracks=tracks)).encode()
@@ -50,6 +51,8 @@ def publish(args):
             with closing(child.stdin) as sink:
                 sink.write(struct.pack(">I", len(catalog)) + catalog)
                 start = None
+                sample_time = time.monotonic()
+                video_frames = video_bytes = 0
                 for packet in container.demux(video, audio):
                     if not packet.size or packet.pts is None:
                         continue
@@ -67,15 +70,25 @@ def publish(args):
                         time.sleep(max(0, wall + timestamp / 1e6 - time.monotonic()))
                     tag = 3 if packet.stream == audio else (1 if packet.is_keyframe else 2)
                     duration = int(packet.duration * packet.time_base / CLOCK)
-                    # Local bridge fixes video at 30 fps and Opus at 20 ms.
-                    # 本机桥接固定视频为 30 fps、Opus 为 20 ms，NUT 可省略包时长。
+                    # Local bridge fixes video at 60 fps and Opus at 20 ms.
+                    # 本机桥接固定视频为 60 fps、Opus 为 20 ms，NUT 可省略包时长。
                     if not duration and args.stdin_program:
-                        duration = 20000 if tag == 3 else 33333
+                        duration = 20000 if tag == 3 else 16667
                     if not duration:
                         raise ValueError("input packet has no duration")
                     sink.write(HEADER.pack(tag, timestamp, duration, packet.size))
                     sink.write(bytes(packet))
                     sink.flush()
+                    if tag != 3:
+                        video_frames += 1
+                        video_bytes += packet.size
+                        now = time.monotonic()
+                        elapsed = now - sample_time
+                        if elapsed >= 5:
+                            print(f"PERI_PROGRAM_VIDEO {v.width}x{v.height} "
+                                  f"{video_frames / elapsed:.1f} fps "
+                                  f"{video_bytes * 8 / elapsed / 1e6:.2f} Mbps", flush=True)
+                            sample_time, video_frames, video_bytes = now, 0, 0
             if child.wait():
                 raise RuntimeError("PERI publisher failed")
 
@@ -87,12 +100,96 @@ def exact(pipe, length):
     return data
 
 
+class ProgramFeed:
+    """Share a single QUIC subscription across HTTP viewers. / 网页观众共享一个 QUIC 订阅。"""
+    def __init__(self, config):
+        self.child = pipe_process(config, "av-subscribe", stdout=subprocess.PIPE)
+        self.lock = threading.Lock()
+        self.viewers = set()
+        self.catalog = None
+        self.error = None
+        self.started = False
+
+    def join(self):
+        # Bound queued references per viewer. A stalled HTTP client reconnects separately.
+        # 限制单观众排队引用数，慢客户端独立重连。
+        packets = queue.Queue(maxsize=64)
+        with self.lock:
+            if self.error:
+                raise EOFError(self.error)
+            self.viewers.add(packets)
+            if not self.started:
+                self.started = True
+                threading.Thread(target=self.read, daemon=True).start()
+        return packets
+
+    def read(self):
+        try:
+            with self.child.stdout as source:
+                length, = struct.unpack(">I", exact(source, 4))
+                if not 0 < length <= 16384:
+                    raise ValueError("invalid catalog")
+                video, audio = sorted(json.loads(exact(source, length))["tracks"], key=lambda t: t["id"])
+                if video["width"] > 2560 or video["height"] > 1440 or audio["channels"] not in (1, 2):
+                    raise ValueError("unsupported program catalog")
+                self.catalog = video, audio
+                while True:
+                    tag, pts, duration, size = HEADER.unpack(exact(source, HEADER.size))
+                    if not 0 < size <= MAX_PACKET or tag not in (1, 2, 3):
+                        raise ValueError("invalid PERI adapter packet")
+                    packet = tag, pts, duration, exact(source, size)
+                    with self.lock:
+                        for viewer in tuple(self.viewers):
+                            if viewer.full():
+                                self.viewers.remove(viewer)
+                            else:
+                                viewer.put_nowait(packet)
+        except (EOFError, OSError, ValueError, KeyError, TypeError) as error:
+            with self.lock:
+                self.error = str(error) or "subscription ended"
+        finally:
+            self.child.terminate()
+            self.child.wait()
+
+    def next_packet(self, viewer):
+        while True:
+            with self.lock:
+                if viewer not in self.viewers:
+                    raise EOFError("viewer fell behind")
+                if self.error and viewer.empty():
+                    raise EOFError(self.error)
+            try:
+                return viewer.get(timeout=.25)
+            except queue.Empty:
+                continue
+
+
 class Viewer(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
-            body = ('<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width">'
-                    '<title>PERI 直播</title><video controls playsinline preload="none" '
-                    'style="max-width:100%" src="/live.webm"></video>').encode()
+            body = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>PERI 直播</title>
+<style>*{box-sizing:border-box}body{margin:0;background:#101114;color:#eee;font:16px system-ui}
+main{width:min(100%,2560px);margin:auto}video{display:block;width:100%;height:min(100dvh,56.25vw);
+background:#000;object-fit:contain}p{margin:12px 16px}</style>
+<main><video controls playsinline muted autoplay src="/live.webm"></video>
+<p role="status">正在连接直播…</p></main>
+<script>
+const v=document.querySelector('video'),statusLine=document.querySelector('p');
+let retry;
+v.onplaying=()=>{clearTimeout(retry);statusLine.textContent=v.muted?'直播中 · 可在播放器中开启声音':''};
+v.onvolumechange=()=>{if(!v.paused) v.onplaying()};
+v.onwaiting=()=>{statusLine.textContent='正在等待直播画面…'};
+function reconnect(){
+  clearTimeout(retry);
+  statusLine.textContent='直播暂时不可用，正在重新连接…';
+  retry=setTimeout(()=>{v.load();v.play().catch(()=>{})},3000);
+}
+v.onended=reconnect;
+v.onerror=()=>{if(!v.canPlayType('video/webm; codecs="av01.0.12M.08,opus"')){
+  statusLine.textContent='当前浏览器无法播放 AV1 / Opus WebM，请换用支持该格式的浏览器。';
+}else reconnect()};
+</script></html>""".encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -106,22 +203,28 @@ class Viewer(BaseHTTPRequestHandler):
             self.send_error(503)
             return
         try:
-            with pipe_process(self.server.config, "av-subscribe", stdout=subprocess.PIPE) as child:
-                try:
-                    length, = struct.unpack(">I", exact(child.stdout, 4))
-                    if not 0 < length <= 16384:
-                        raise ValueError("invalid catalog")
-                    video, audio = sorted(json.loads(exact(child.stdout, length))["tracks"],
-                                          key=lambda t: t["id"])
-                    if video["width"] > 1920 or video["height"] > 1080 or audio["channels"] not in (1, 2):
-                        raise ValueError("unsupported program catalog")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "video/webm")
-                    self.send_header("Cache-Control", "no-store")
-                    self.end_headers()
-                    self.remux(child.stdout, video, audio)
-                finally:
-                    child.terminate()
+            with self.server.feed_lock:
+                feed = self.server.feed
+                if feed is None or feed.error:
+                    feed = self.server.feed = ProgramFeed(self.server.config)
+                viewer = feed.join()
+            try:
+                first = feed.next_packet(viewer)
+                while first[0] != 1:
+                    first = feed.next_packet(viewer)
+                video, audio = feed.catalog
+                self.log_message("subscribed: AV1 %sx%s + Opus", video["width"], video["height"])
+                self.send_response(200)
+                self.send_header("Content-Type", "video/webm")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.remux(feed, viewer, first, video, audio)
+            finally:
+                with self.server.feed_lock, feed.lock:
+                    feed.viewers.discard(viewer)
+                    if not feed.viewers and self.server.feed is feed:
+                        self.server.feed = None
+                        feed.child.terminate()
         except (EOFError, OSError, ValueError) as error:
             self.log_message("stream ended: %s", error)
             if not getattr(self, "streaming", False):
@@ -129,27 +232,27 @@ class Viewer(BaseHTTPRequestHandler):
         finally:
             self.server.slots.release()
 
-    def remux(self, source, video, audio):
+    def remux(self, feed, viewer, first, video, audio):
         self.streaming = True
         self.connection.settimeout(5)
         with av.open(self.wfile, "w", format="webm",
                      options={"live": "1", "cluster_time_limit": "250"}) as out:
-            vs = out.add_stream("libaom-av1", rate=30)
+            vs = out.add_stream("libaom-av1", rate=max(1, min(120, round(1_000_000 / first[2]))))
+            vs.codec_context.thread_count = 1
             vs.width, vs.height = video["width"], video["height"]
             vs.codec_context.extradata = bytes(video["init"])
             aus = out.add_stream("libopus", rate=audio["sample_rate"])
             aus.layout = "mono" if audio["channels"] == 1 else "stereo"
             aus.codec_context.extradata = bytes(audio["init"])
-            origin = None
+            origin = first[1]
+            self.log_message("first video keyframe: %d bytes", len(first[3]))
+            packet = first
             while True:
-                tag, pts, duration, size = HEADER.unpack(exact(source, HEADER.size))
-                if not 0 < size <= MAX_PACKET or tag not in (1, 2, 3):
-                    raise ValueError("invalid PERI adapter packet")
-                pkt = av.Packet(exact(source, size))
-                if origin is None:
-                    origin = pts
+                tag, pts, duration, payload = packet
                 if pts < origin:
+                    packet = feed.next_packet(viewer)
                     continue
+                pkt = av.Packet(payload)
                 # Both tracks share the first keyframe's origin; preserve source timing.
                 # 两轨共用首个关键帧的时间原点，保留源端的音画相对时间。
                 pkt.stream = aus if tag == 3 else vs
@@ -157,6 +260,7 @@ class Viewer(BaseHTTPRequestHandler):
                 pkt.pts = pkt.dts = pts - origin
                 pkt.duration, pkt.is_keyframe = duration, tag != 2
                 out.mux(pkt)
+                packet = feed.next_packet(viewer)
 
 
 def main():
@@ -185,6 +289,8 @@ def main():
         bind = args.bind or ("0.0.0.0" if wildcard else "127.0.0.1")
         with ThreadingHTTPServer((bind, args.port), Viewer) as server:
             server.config = args
+            server.feed = None
+            server.feed_lock = threading.Lock()
             server.slots = threading.BoundedSemaphore(4)
             print(f"http://{server.server_address[0]}:{server.server_port}/", flush=True)
             server.serve_forever()

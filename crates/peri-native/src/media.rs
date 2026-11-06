@@ -263,6 +263,16 @@ impl Publisher {
     pub async fn send(&self, frame: &Frame, budget: Duration) -> Result<(), Error> {
         self.start_send(frame, budget).await?.finish().await
     }
+    /// Start in source order, then await the returned receipt within the original deadline.
+    /// 按源顺序启动发送，返回的确认任务沿用同一期限。
+    pub async fn send_with_receipt(
+        &self,
+        frame: &Frame,
+        budget: Duration,
+    ) -> Result<impl std::future::Future<Output = Result<(), Error>> + Send + use<>, Error> {
+        let send = self.start_send(frame, budget).await?;
+        Ok(send.finish())
+    }
     pub fn poll_keyframe_request(&self) -> Result<Option<u16>, Error> {
         let track = self.session.poll_keyframe_request();
         if let Some(id) = track

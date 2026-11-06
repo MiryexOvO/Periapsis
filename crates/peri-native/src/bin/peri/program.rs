@@ -32,6 +32,7 @@ pub async fn run(args: &[String], publish: bool) -> Result<(), Error> {
             peri_native::publish_authenticated(connection, hello(), &args[3], &token, SETUP)
                 .await?;
         let sender = Publisher::new(session, catalog, SETUP).await?;
+        let mut receipts = tokio::task::JoinSet::new();
         let mut sequence = 0;
         let mut previous_video = 0;
         loop {
@@ -66,9 +67,17 @@ pub async fn run(args: &[String], publish: bool) -> Result<(), Error> {
                 timestamp_us: u64::from_be_bytes(clock[..8].try_into()?),
                 duration_us: u32::from_be_bytes(clock[8..].try_into()?),
             };
-            sender.send(&frame, SETUP).await?;
+            // Keep up to eight receipts in flight without reordering stream creation.
+            // 最多并行等待八个确认，开流顺序保持与音视频对象一致。
+            if receipts.len() >= 8 {
+                receipts.join_next().await.expect("pending receipt")??;
+            }
+            receipts.spawn(sender.send_with_receipt(&frame, SETUP).await?);
             let _ = sender.poll_recovery()?;
             let _ = sender.poll_report()?;
+        }
+        while let Some(result) = receipts.join_next().await {
+            result??;
         }
     } else {
         let token = std::env::var("PERI_SUBSCRIBE_TOKEN")?;
@@ -125,4 +134,3 @@ fn blob(input: &mut impl Read, max: usize) -> Result<Vec<u8>, Error> {
     input.read_exact(&mut bytes)?;
     Ok(bytes)
 }
-
