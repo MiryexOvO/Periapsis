@@ -11,7 +11,7 @@ with urllib.request.urlopen(wheel['url'], timeout=60) as response:
     data = response.read(100 * 1024 * 1024 + 1)
 if len(data) > 100 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != wheel['digests']['sha256']:
     raise SystemExit('Wheel size/hash mismatch')
-target = (pathlib.Path(__file__).resolve().parent.parent / 'dist' / 'live-python').resolve()
+target = (pathlib.Path(__file__).resolve().parents[2] / 'dist' / 'live-python').resolve()
 with zipfile.ZipFile(io.BytesIO(data)) as archive:
     for item in archive.infolist():
         if not (target / item.filename).resolve().is_relative_to(target): raise SystemExit('Invalid wheel path')

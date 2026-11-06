@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+test-encoder = []
+
 [dependencies]
 peri-types.workspace = true
 peri-session = { path = "../peri-session" }

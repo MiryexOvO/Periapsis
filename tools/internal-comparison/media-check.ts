@@ -20,7 +20,7 @@ async function run(command:string,args:string[]) {
  } finally {clearTimeout(timer);}
 }
 try {
- await run(process.env.PERI_PYTHON ?? "python",["scripts/live-av1-worker.py","--check",fixture]);
+ await run(process.env.PERI_PYTHON ?? "python",["tests/fixtures/live-av1-worker.py","--check",fixture]);
  await writeFile(probe,await run(process.env.PERI_FFPROBE ?? "ffprobe",["-v","error","-f","ivf","-select_streams","v:0","-show_frames","-show_entries","frame=key_frame,pts,pkt_size,width,height","-of","json",fixture]));
  await run("cargo",["test","-p","peri-native","--test","native","shared_av1_fixture","--","--ignored","--nocapture"]);
  await run("cargo",["test","--manifest-path","tools/internal-comparison/Cargo.toml","-p","peri-internal-comparison","--features","media-interop","--test","native_quic","--","--nocapture"]);

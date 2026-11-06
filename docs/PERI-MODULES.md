@@ -24,7 +24,7 @@
 | AV1 文件适配  | peri-native/src/av1.rs                     | 有界 IVF 导入和录制、探测元数据检查                        | 工具适配；不要求第三方使用 IVF                                        |
 | 命令与示例    | peri-native/src/bin/peri\*、examples       | 证书初始化、Relay、文件/实时发布、观看录制                 | 应用层，非 SDK 协议要求                                               |
 | 共享播放工具  | peri-native/src/playback.rs                | AV1解码、单调时钟、有界GOP调度                             | 公共可选工具；接入方可使用自有解码与呈现                              |
-| 实时测试源    | scripts/live-av1-worker.py                 | PyAV AV1合成编码源                                         | 内部验证工具，不属于SDK要求                                           |
+| 实时测试源    | tests/fixtures/live-av1-worker.py                 | PyAV AV1合成编码源                                         | 内部验证工具，不属于SDK要求                                           |
 
 ## 给外部开发者保留的路径
 

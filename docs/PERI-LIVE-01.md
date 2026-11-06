@@ -13,9 +13,9 @@
 Windows x64 可使用以下脚本，从官方 PyPI 下载匹配当前 Python 的 wheel，校验发布哈希后安装至忽略的 dist：
 
 ```powershell
-python scripts/setup-live-python.py
+python tests/fixtures/setup-live-python.py
 $env:PYTHONPATH = "$PWD\dist\live-python"
-cargo build -p peri-native --bin peri
+cargo build -p peri-native --features test-encoder --bin peri
 ```
 
 其他平台可使用 `python -m pip install --target dist/live-python av==16.1.0`，并相应设置 PYTHONPATH。
@@ -24,7 +24,7 @@ cargo build -p peri-native --bin peri
 证书、Relay 和角色凭据配置沿用[服务说明](PERI-SERVICE-01.md)。在设置发布凭据的终端运行：
 
 ```powershell
-.\target\debug\peri.exe live 127.0.0.1:4444 localhost dist/peri-local/cert.der live/av1 scripts/live-av1-worker.py 900
+.\target\debug\peri.exe live 127.0.0.1:4444 localhost dist/peri-local/cert.der live/av1 tests/fixtures/live-av1-worker.py 900
 ```
 
 最后参数为生成帧数，范围 1–13500；900 帧约一分钟。Ctrl+C 取消发布并结束编码子进程。

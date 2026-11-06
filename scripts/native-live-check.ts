@@ -55,7 +55,7 @@ async function decoded(path: string) {
   return output.split(/\r?\n/).filter(line => line.trim() && !line.startsWith("#")).map(line => line.split(",").at(-1)!.trim());
 }
 try {
-  await run("cargo", ["build", "--locked", "-p", "peri-native", "--bin", "peri"], environment, true, 120000);
+  await run("cargo", ["build", "--locked", "-p", "peri-native", "--features", "test-encoder", "--bin", "peri"], environment, true, 120000);
   const certDir = resolve(directory, "tls"), wrongDir = resolve(directory, "wrong-tls");
   await run(binary, ["init", certDir]); await run(binary, ["init", wrongDir]);
   const cert = resolve(certDir, "cert.der"), key = resolve(certDir, "key.key");
@@ -63,7 +63,7 @@ try {
   const server = start(binary, ["relay", "127.0.0.1:0", cert, key, resource]); children.push(server);
   await waitFor(server, "PERI_RELAY_READY");
   const address = server.state.output.match(/PERI_RELAY_READY ([^\s]+)/)?.[1]; if (!address) throw new Error("missing server address");
-  const publishArgs = ["live", address, "localhost", cert, resource, resolve(root, "scripts/live-av1-worker.py"), "13500"];
+  const publishArgs = ["live", address, "localhost", cert, resource, resolve(root, "tests/fixtures/live-av1-worker.py"), "13500"];
   let publisher = start(binary, publishArgs); children.push(publisher);
   await waitFor(server, "PERI_RESOURCE_READY"); await waitFor(publisher, "PERI_PUBLISH_READY");
   const denied = resolve(directory, "denied.ivf");
@@ -78,16 +78,16 @@ try {
   if (exists) throw new Error("rejected viewer created output");
   console.log("Verified role isolation, wrong credentials/certificate/name rejection and exclusive publisher");
   const encoded = resolve(directory, "encoder.ivf");
-  await run(process.env.PERI_PYTHON ?? "python", [resolve(root, "scripts/live-av1-worker.py"), "--check", encoded]);
+  await run(process.env.PERI_PYTHON ?? "python", [resolve(root, "tests/fixtures/live-av1-worker.py"), "--check", encoded]);
   if ((await decoded(encoded)).length !== 30) throw new Error("live encoder decode mismatch");
   const pooled=resolve(directory,"pooled.ivf");
-  await run(process.env.PERI_PYTHON ?? "python",[resolve(root,"scripts/live-av1-worker.py"),"--pool-check",pooled],{...environment,PERI_ENCODER_POOL:"1"});
+  await run(process.env.PERI_PYTHON ?? "python",[resolve(root,"tests/fixtures/live-av1-worker.py"),"--pool-check",pooled],{...environment,PERI_ENCODER_POOL:"1"});
   if((await decoded(pooled)).length!==90) throw new Error("pool switch decode failed");
   const quality=[];
   // 画质对照保持相同原始像素：同时测量默认编码与关键帧限幅，避免只展示低延迟。
   for (const intraPct of [0,100]) for (const target of [300000,100000]) {
     const path=resolve(directory,`quality-${target}-${intraPct}.ivf`);
-    await run(process.env.PERI_PYTHON ?? "python",[resolve(root,"scripts/live-av1-worker.py"),"--check",path],{...environment,PERI_TEST_BITRATE:String(target),PERI_MAX_INTRA_PCT:String(intraPct)});
+    await run(process.env.PERI_PYTHON ?? "python",[resolve(root,"tests/fixtures/live-av1-worker.py"),"--check",path],{...environment,PERI_TEST_BITRATE:String(target),PERI_MAX_INTRA_PCT:String(intraPct)});
     const psnr=await run(ffmpeg,["-hide_banner","-loglevel","info","-i",path,"-f","rawvideo","-pixel_format","yuv420p","-video_size","320x180","-framerate","15","-i",path+".yuv","-lavfi","psnr","-f","null","-"],environment,true,60000);
     const value=psnr.match(/average:([\d.]+|inf)/)?.[1]; if(!value) throw new Error("missing quality measurement");
     const ssim=await run(ffmpeg,["-hide_banner","-loglevel","info","-i",path,"-f","rawvideo","-pixel_format","yuv420p","-video_size","320x180","-framerate","15","-i",path+".yuv","-lavfi","ssim","-f","null","-"],environment,true,60000);
