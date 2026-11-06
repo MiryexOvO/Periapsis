@@ -170,7 +170,10 @@ pub async fn play(args: &[String]) -> Result<(), Error> {
 
 async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
     let count: u32 = args[4].parse()?;
-    if !(1..=10000).contains(&count) || args[5..].iter().any(|a| a != "--headless" && a != "--fifo")
+    if !(1..=10000).contains(&count)
+        || args[5..]
+            .iter()
+            .any(|a| a != "--headless" && a != "--fifo" && a != "--preview")
     {
         return Err("invalid playback arguments".into());
     }
@@ -228,35 +231,71 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
         32,
     )?;
     let mut decoder = Decoder::new(&track).await?;
+    let preview = args[5..].iter().any(|arg| arg == "--preview");
+    if preview && headless {
+        return Err("choose one playback output".into());
+    }
     let mut display = if headless {
         None
     } else {
-        Some(
+        let mut output = if preview {
+            command("ffmpeg", "PERI_FFMPEG")
+        } else {
             command("ffplay", "PERI_FFPLAY")
+        };
+        output.args([
+            "-loglevel",
+            "error",
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "0",
+            "-fpsprobesize",
+            "0",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "rgb24",
+            "-video_size",
+            &format!("{}x{}", track.width.unwrap(), track.height.unwrap()),
+            "-framerate",
+            "15",
+            "-i",
+            "pipe:0",
+        ]);
+        if preview {
+            // Replace a complete snapshot so concurrent readers see whole JPEGs.
+            // 原子替换整张快照，多个读者只会读到完整的 JPEG。
+            let directory = std::path::PathBuf::from(
+                std::env::var_os("PERI_PREVIEW_DIR").ok_or("missing PERI_PREVIEW_DIR")?,
+            );
+            output
                 .args([
-                    "-loglevel",
-                    "error",
-                    "-probesize",
-                    "32",
-                    "-analyzeduration",
-                    "0",
-                    "-fpsprobesize",
-                    "0",
+                    "-vf",
+                    "fps=5",
+                    "-c:v",
+                    "mjpeg",
                     "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "rgb24",
-                    "-video_size",
-                    &format!("{}x{}", track.width.unwrap(), track.height.unwrap()),
-                    "-framerate",
-                    "15",
-                    "-i",
-                    "pipe:0",
-                    "-autoexit",
+                    "image2",
+                    "-update",
+                    "1",
+                    "-atomic_writing",
+                    "1",
+                    "-y",
                 ])
+                .arg(directory.join("frame.jpg"));
+        } else {
+            output.arg("-autoexit");
+        }
+        Some(
+            output
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(if preview {
+                    Stdio::inherit()
+                } else {
+                    Stdio::null()
+                })
                 .spawn()?,
         )
     };

@@ -5,6 +5,8 @@
 mod live;
 #[path = "peri/playback.rs"]
 mod playback;
+#[path = "peri/program.rs"]
+mod program;
 
 use peri_native::{
     ALPN,
@@ -383,11 +385,14 @@ async fn main() -> Result<(), Error> {
         Some("relay") if args.len() == 5 => relay(&args[1..]).await,
         Some("publish") if (7..=8).contains(&args.len()) => publish(&args[1..]).await,
         Some("live") if args.len() == 7 => live::run(&args[1..]).await,
+        Some(mode @ ("av-publish" | "av-subscribe")) if args.len() == 5 => {
+            program::run(&args[1..], mode == "av-publish").await
+        }
         Some("receive") if args.len() == 7 => receive(&args[1..]).await,
         Some("play") if (6..=8).contains(&args.len()) => playback::play(&args[1..]).await,
         Some("--help") | None => {
             println!(
-                "peri init DIR\nperi relay BIND CERT.der KEY.key RESOURCE\nperi publish ADDRESS SERVER_NAME TRUST.der RESOURCE INPUT.ivf (--all-intra|--gop) [--loop]\nperi receive ADDRESS SERVER_NAME TRUST.der RESOURCE OUTPUT.ivf COUNT\nperi play ADDRESS SERVER_NAME TRUST.der RESOURCE COUNT [--headless] [--fifo]\nperi live ADDRESS SERVER_NAME TRUST.der RESOURCE WORKER.py COUNT\nCredentials: PERI_PUBLISH_TOKEN / PERI_SUBSCRIBE_TOKEN"
+                "peri av-publish|av-subscribe ADDRESS SERVER_NAME TRUST.der RESOURCE (local binary adapter)\nperi init DIR\nperi relay BIND CERT.der KEY.key RESOURCE\nperi publish ADDRESS SERVER_NAME TRUST.der RESOURCE INPUT.ivf (--all-intra|--gop) [--loop]\nperi receive ADDRESS SERVER_NAME TRUST.der RESOURCE OUTPUT.ivf COUNT\nperi play ADDRESS SERVER_NAME TRUST.der RESOURCE COUNT [--headless|--preview] [--fifo]\nperi live ADDRESS SERVER_NAME TRUST.der RESOURCE WORKER.py COUNT\nCredentials: PERI_PUBLISH_TOKEN / PERI_SUBSCRIBE_TOKEN"
             );
             Ok(())
         }

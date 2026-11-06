@@ -59,11 +59,21 @@ impl ReceiverReport {
             && self.queued_bytes <= 8 * 1024 * 1024
     }
 }
+/// Reserve stdout for a binary media adapter.
+/// 将标准输出留给二进制媒体适配器。
+pub fn trace_to_stderr() {
+    TRACE_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+static TRACE_STDERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn trace(event: &str, fields: impl Serialize) {
-    println!(
-        "PERI_TRACE {}",
-        serde_json::json!({"event":event,"wall_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),"process":std::process::id(),"data":fields})
-    );
+    let data = serde_json::json!({"event":event,"wall_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),"process":std::process::id(),"data":fields});
+    // Binary adapters reserve stdout for packets. / 二进制适配器保留标准输出给媒体包。
+    if TRACE_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("PERI_TRACE {data}");
+    } else {
+        println!("PERI_TRACE {data}");
+    }
 }
 struct SendState {
     stream: quinn::SendStream,

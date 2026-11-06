@@ -1,0 +1,15 @@
+[Unit]
+Description=PERI QUIC relay
+After=network.target
+
+[Service]
+DynamicUser=yes
+EnvironmentFile=/etc/peri/relay.env
+LoadCredential=relay.key:/etc/peri/key.key
+ExecStart=/opt/peri/bin/peri relay 0.0.0.0:4444 /etc/peri/cert.der %d/relay.key live/av1
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
