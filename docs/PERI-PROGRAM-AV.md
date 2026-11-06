@@ -4,7 +4,7 @@
 
 ## 配置和启动服务器
 
-在仓库根目录运行一次 `python3 scripts/peri-server.py setup`。填写客户端可访问的 IPv4、Relay 的 UDP 端口及网页 TCP 端口。首次可选 new 生成证书和私钥；使用已有证书时填写与之配套的私钥。替换证书后请重新生成并分发主播邀请。已有凭据会成对复用，首次无凭据时自动生成，保存于当前账户的 ~/.config/peri/server.json。
+在仓库根目录运行一次 `python3 scripts/peri-server.py setup`。IPv4 可直接回车采用 0.0.0.0，随后填写 Relay UDP 和网页 TCP 端口。使用通配地址时，生成推流码可用 link --public-ip 指定主播能访问的 IPv4。首次可选 new 生成证书和私钥；使用已有证书时填写与之配套的私钥。替换证书后请重新生成并分发主播邀请。有效凭据自动复用，缺失、无效或重复的令牌自动补齐；配置中断后重跑可选用已生成的证书对，配置，保存于当前账户的 ~/.config/peri/server.json。
 
 ~~~sh
 python3 scripts/peri-server.py relay
