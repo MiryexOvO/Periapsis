@@ -1,6 +1,6 @@
 # OBS 节目音视频 / OBS program audio and video
 
-当前开发入口传输一个 AV1 视频轨和一个 Opus 音轨。网页把两轨按源时间戳重新封装为 WebM，点击原生 video 控件播放。每位观众使用一个 PERI 订阅；当前适配器每进程最多同时四路。此前的共享 JPEG 预览仍可独立使用。
+当前开发入口传输一个 AV1 视频轨和一个 Opus 音轨。网页把两轨按源时间戳重新封装为 WebM，点击原生 video 控件播放。当前观看进程内所有观众共用一个 PERI 订阅；当前适配器每进程最多同时四路。此前的共享 JPEG 预览仍可独立使用。
 
 ## OBS 一键直播
 
@@ -34,7 +34,9 @@ python scripts/program-av.py watch 127.0.0.1:4444 localhost ./cert.der live/av1 
 
 ## 观看
 
-启动 watch 后打开观看页并点击播放。OBS 停播时输入结束；重新开播后重新载入网页。
+网页默认静音自动播放，播放器随视口放大，支持原生音量和全屏控制。网络或直播中断后网页重试。观众需要支持 AV1/Opus WebM 的浏览器。打开观看页后，watch 日志应先出现 subscribed（含尺寸），然后出现 first video keyframe；后者表示网关已经收到可用于开始播放的视频对象。
+
+1440p60 配置要求 OBS 输出 2560×1440、60 fps，发布端目标视频码率 20 Mbps。可从 obs-publish.log 的 PERI_PROGRAM_VIDEO 核对实际发布速率。网页共享一次原生订阅，浏览器分别通过 HTTP 接收媒体，服务器出口须为每个观众提供足够视频、音频和协议带宽。更新时用 cargo build --release --locked -p peri-native --bin peri 构建发布与服务器端程序，服务器更新 scripts/program-av.py 后在维护窗口重启 Relay 与 watch。
 
 ## 开发验证
 
