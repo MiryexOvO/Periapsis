@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import queue
+import re
+import tempfile
 from pathlib import Path
 import shutil
 import struct
@@ -189,6 +191,73 @@ class ViewerSocket:
             raise
 
 
+class MobileStream:
+    """Share one on-demand HLS rendition. / 手机观众共享一路按需转码。"""
+    def __init__(self, server):
+        self.server = server
+        self.lock = threading.Lock()
+        self.process = self.directory = None
+        self.last_request = 0
+
+    def stop_locked(self):
+        if self.process is not None:
+            self.process.kill()
+            self.process.wait()
+            self.process = None
+        if self.directory is not None:
+            self.directory.cleanup()
+            self.directory = None
+
+    def reap(self, child):
+        while True:
+            time.sleep(5)
+            with self.lock:
+                if self.process is not child:
+                    return
+                if child.poll() is not None or time.monotonic() - self.last_request > 30:
+                    self.stop_locked()
+                    return
+
+    def read(self, name):
+        playlist = name == "live.m3u8"
+        with self.lock:
+            self.last_request = time.monotonic()
+            if self.process is None or self.process.poll() is not None:
+                if not playlist:
+                    raise FileNotFoundError(name)
+                self.stop_locked()
+                ffmpeg = shutil.which(os.environ.get("PERI_FFMPEG", "ffmpeg"))
+                if not ffmpeg:
+                    raise RuntimeError("手机播放需要在 watch 服务器安装 FFmpeg")
+                self.directory = tempfile.TemporaryDirectory(prefix="peri-hls-")
+                host, port = self.server.server_address
+                source = f"http://{host if host != '0.0.0.0' else '127.0.0.1'}:{port}/live.webm"
+                # Share the existing subscription and publish only complete segments.
+                # 复用观看服务的订阅，仅在分片完整写入后开放读取。
+                args = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
+                        "-probesize", "2M", "-analyzeduration", "500000", "-i", source,
+                        "-vf", "fps=60,scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+                        "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+                        "-pix_fmt", "yuv420p", "-b:v", "3200k", "-maxrate", "3600k", "-bufsize", "3600k", "-g", "60", "-sc_threshold", "0",
+                        "-c:a", "aac", "-b:a", "96k", "-f", "hls", "-hls_time", "1",
+                        "-hls_list_size", "6", "-hls_flags", "delete_segments+independent_segments+temp_file",
+                        "-hls_start_number_source", "epoch", "-hls_segment_filename", "seg%d.ts", "live.m3u8"]
+                self.process = subprocess.Popen(args, cwd=self.directory.name)
+                threading.Thread(target=self.reap, args=(self.process,), daemon=True).start()
+            child = self.process
+            path = Path(self.directory.name) / name
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                return path.read_bytes()
+            except FileNotFoundError:
+                if not playlist:
+                    raise
+                if child.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError("手机直播暂不可用，请检查 watch 终端的 FFmpeg 日志")
+                time.sleep(.15)
+
+
 class Viewer(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
@@ -197,10 +266,11 @@ class Viewer(BaseHTTPRequestHandler):
 <style>*{box-sizing:border-box}body{margin:0;background:#101114;color:#eee;font:16px system-ui}
 main{width:min(100%,2560px);margin:auto}video{display:block;width:100%;height:min(100dvh,56.25vw);
 background:#000;object-fit:contain}p{margin:12px 16px}</style>
-<main><video controls playsinline muted autoplay src="/live.webm"></video>
+<main><video controls playsinline muted autoplay></video>
+<p><label>画质 <select id="quality"><option value="source">原画</option><option value="720">720p60 · 流畅</option></select></label></p>
 <p role="status">正在连接直播…</p></main>
-<script>
-const v=document.querySelector('video'),statusLine=document.querySelector('p');
+<script src="/hls.light.min.js"></script><script>
+const v=document.querySelector('video'),statusLine=document.querySelector('[role=status]');
 let retry;
 v.onplaying=()=>{clearTimeout(retry);statusLine.textContent=v.muted?'直播中 · 可在播放器中开启声音':''};
 v.onvolumechange=()=>{if(!v.paused) v.onplaying()};
@@ -214,21 +284,102 @@ v.ontimeupdate=()=>{
   if(lead>0.65 && v.playbackRate===1) v.playbackRate=1.04;
   if(lead<0.4 && v.playbackRate===1.04) v.playbackRate=1;
 };
-function reconnect(){
+const quality=document.querySelector('#quality');
+const nativeHls=!!v.canPlayType('application/vnd.apple.mpegurl');
+const mseHls=window.Hls && Hls.isSupported();
+const appleMobile=/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+const canSource=!!v.canPlayType('video/webm; codecs="av01.0.12M.08,opus"');
+quality.options[0].disabled=!canSource;
+quality.options[1].disabled=!nativeHls && !mseHls;
+quality.value=(appleMobile || !canSource) && !quality.options[1].disabled?'720':'source';
+let hls, startup, generation=0;
+function tune(){
+  const session=++generation;
   clearTimeout(retry);
-  statusLine.textContent='直播暂时不可用，正在重新连接…';
-  retry=setTimeout(()=>{v.load();v.play().catch(()=>{})},3000);
+  clearTimeout(startup);
+  v.onerror=v.onended=null;
+  if(hls){hls.destroy();hls=null;}
+  v.removeAttribute('src');
+  v.load();
+  v.playbackRate=1;
+  if(quality.selectedOptions[0].disabled){
+    statusLine.textContent='当前浏览器没有可用的直播格式。';
+    return;
+  }
+  const low=quality.value==='720';
+  statusLine.textContent=low?'正在准备 720p60…':'正在连接原画…';
+  function reconnect(){
+    if(session!==generation) return;
+    clearTimeout(retry);
+    clearTimeout(startup);
+    statusLine.textContent='直播暂时不可用，正在重新连接…';
+    retry=setTimeout(tune,3000);
+  }
+  function play(){
+    v.play().catch(error=>{
+      if(session===generation && error.name==='NotAllowedError')
+        statusLine.textContent='请点播放器的播放按钮开始观看。';
+    });
+  }
+  v.onerror=v.onended=reconnect;
+  // Prefer native HLS on Apple devices. Other desktops can use Media Source.
+  // 苹果设备优先使用原生 HLS，其他桌面浏览器可通过 Media Source 播放。
+  if(low && mseHls && !(appleMobile && nativeHls)){
+    hls=new Hls({liveSyncDurationCount:3});
+    hls.on(Hls.Events.ERROR,(_,data)=>{if(data.fatal) reconnect()});
+    hls.on(Hls.Events.MANIFEST_PARSED,play);
+    hls.loadSource('/mobile/live.m3u8');
+    hls.attachMedia(v);
+  }else{
+    v.src=low?'/mobile/live.m3u8':'/live.webm';
+    play();
+  }
+  startup=setTimeout(()=>{if(v.readyState<2 && !v.error)
+    statusLine.textContent='仍未收到画面，请检查直播或切换画质。'},15000);
 }
-v.onended=reconnect;
-v.onerror=()=>{if(!v.canPlayType('video/webm; codecs="av01.0.12M.08,opus"')){
-  statusLine.textContent='当前浏览器无法播放 AV1 / Opus WebM，请换用支持该格式的浏览器。';
-}else reconnect()};
+quality.onchange=tune;
+tune();
 </script></html>""".encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(body)
+            return
+        if self.path == "/hls.light.min.js":
+            asset = Path(__file__).resolve().parent / "vendor/hls.js/hls.light.min.js"
+            try:
+                body = asset.read_bytes()
+            except FileNotFoundError:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if re.fullmatch(r"/mobile/(live\.m3u8|seg[0-9]{1,20}\.ts)", self.path):
+            name = self.path.rsplit("/", 1)[1]
+            try:
+                body = self.server.mobile.read(name)
+            except FileNotFoundError:
+                self.send_error(404)
+                return
+            except (RuntimeError, OSError) as error:
+                self.log_message("mobile HLS: %s", error)
+                self.send_error(503)
+                return
+            self.send_response(200)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Type", "application/vnd.apple.mpegurl" if name.endswith(".m3u8") else "video/mp2t")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
         if self.path != "/live.webm":
             self.send_error(404)
@@ -354,7 +505,12 @@ def main():
             server.feed_lock = threading.Lock()
             server.slots = threading.BoundedSemaphore(4)
             print(f"http://{server.server_address[0]}:{server.server_port}/", flush=True)
-            server.serve_forever()
+            server.mobile = MobileStream(server)
+            try:
+                server.serve_forever()
+            finally:
+                with server.mobile.lock:
+                    server.mobile.stop_locked()
 
 
 if __name__ == "__main__":
