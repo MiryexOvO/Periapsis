@@ -20,6 +20,12 @@ python3 scripts/peri-server.py link
 
 要更改观看端口，运行 `python3 scripts/peri-server.py watch-port`，依次填写本机监听 TCP 端口与观众访问的公网 TCP 端口，然后重启 watch。公网转发规则须对应这两个端口。
 
+## 原画和 720p60 观看
+
+桌面观众可在播放器下方选择原画或 720p60，iPhone / iPad 默认使用兼容档。部署时将 scripts/vendor/hls.js 与观看脚本一同更新，其中包含 hls.js 1.7.4 和许可证。首次打开时，watch 会启动一个共享的 FFmpeg 进程，把 PERI 节目转成最高 720p60 的 H.264 / AAC HLS；视频目标码率 3.2 Mbps。选择该档的所有观众共享这个进程。停止请求约 30 秒后回收。原画 WebM 播放与手机转码可同时使用，手机转码占用一个 WebM 观看名额。手机播放延迟取决于服务端转码速度、带宽和播放器分片缓冲。
+
+watch 所在机器需能执行带 AV1 解码、libx264 和 AAC 编码的 `ffmpeg`，或用环境变量 `PERI_FFMPEG` 指定可执行文件路径。Debian / Ubuntu 可用 `apt install ffmpeg`。启动后手机访问日志应出现 `/mobile/live.m3u8` 和 `/mobile/seg….ts`。遇到 503 时查看同一个 watch 终端的 FFmpeg 错误输出。
+
 ## 手动启动
 
 构建当前 peri 程序并启动 Relay。向观看进程提供独立订阅令牌。需要 Python 和 PyAV 16.1.0（Windows 开发目录为 dist/live-python）。在服务器上的 PERI 仓库运行：
