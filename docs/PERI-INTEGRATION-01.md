@@ -100,3 +100,11 @@ Session::start_send的预算覆盖槽等待、写入和ObjectSend::finish的确�
 默认关闭修复的short/fixed单轮实际播放完成60帧、零重连，报告位于dist/live-check-j9Mlay。
 该运行软件延迟P95为310ms、最大313ms，但最大输出间隔2396ms，连续性亚秒条件失败。
 运行用于收发链路回归，未开启严格亚秒门禁；不能据此宣称冻结减少或修复候选通过弱网验收。
+
+## Rust 播放端交付窗口
+
+`peri_native::playback::ReorderWindow::new(video_track_id)` 为一个发布生命周期内的一条视频轨创建窗口。用 `Subscriber` 校验后的帧驱动它，多轨道应用按轨分别记录 `previous`。该值表示已处理的最高序号，解码成功仍由解码器确认。
+
+每次读流前先 `poll(previous, now)`。需要继续收帧时以 `deadline()` 限制等待，并把新帧和到达时间交给 `offer`。`None` 表示当前没有可交付事件，`Delivery::Discarded` 表示旧帧或重复帧，`Delivery::Frame(frame, arrived)` 保留原始到达时间。调用者检查轨道、依赖及播放期限后决定解码或请求恢复。其他轨道直接返回。等待关键帧期间调用 `clear()` 释放旧参考，直接处理新到的关键帧。
+
+原生 `peri play` 使用该接口。Relay 发布入口要求同一发布生命周期内的全局对象序号严格递增，并检查轨道依赖；观看端的等待窗口位于该入口的下游。

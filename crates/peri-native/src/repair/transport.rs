@@ -36,7 +36,7 @@ impl Sender {
                     .agreement()
                     .ok_or(Error::Protocol("closed session"))?,
             )?,
-            budget: Mutex::new(RepairBudget::new(32768, 16384, Instant::now())?),
+            budget: Mutex::new(RepairBudget::new(8192, 4096, Instant::now())?),
             slots: Arc::new(tokio::sync::Semaphore::new(1)),
             sequence: Mutex::new(1),
         })
@@ -61,7 +61,10 @@ impl Sender {
         let packet_len = object.payload.len() + 25;
         let protected = if object.sequence > 0
             && object.duration_us > 0
-            && (1025..=32768).contains(&packet_len)
+            // 关键帧沿用独立流优先级；保护组的全部分片必须能在首批四槽发出。
+            // Preserve keyframe stream priority and fit each protected group in one flight.
+            && !object.independent
+            && (1025..=3072).contains(&packet_len)
         {
             self.codec.protect(
                 &object,
@@ -99,7 +102,13 @@ impl Sender {
                     "repair_fallback",
                     serde_json::json!({"sequence":object.sequence,"bytes":object.payload.len()}),
                 );
-                vec![object]
+                // 原始流已按序写完即可开放下一对象，ACK继续占用Session发送槽。
+                // Once raw bytes are queued in order, only the session slot waits for the ACK.
+                let receipt = session.start_send_until(&object, deadline).await?;
+                drop(permit);
+                return Ok(GroupSend {
+                    future: Box::pin(receipt.finish()),
+                });
             }
         };
         Ok(GroupSend {

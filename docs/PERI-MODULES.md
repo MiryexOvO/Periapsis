@@ -4,27 +4,27 @@
 原生协议的大部分能力仍以 `peri-native` 内部模块提供，并非每个模块都独立成包。
 表中的“已有”描述当前实现，不代表标准化、生产就绪或独立实现互通。
 
-|层/模块|代码位置|已有职责|边界与状态|
-|---|---|---|---|
-|共用类型|crates/peri-types|配置、缓冲策略、能力与协商结果|无网络 I/O；与原型共用|
-|会话协商|crates/peri-session|能力校验、配置选择、握手状态机与旧控制编解码|原生路径复用其协商逻辑，采用自己的控制消息|
-|通用调度原型|crates/peri-scheduler|依赖、过期与队列计费|独立原型；原生媒体层未依赖该 crate|
-|原生会话/对象|crates/peri-native/src/lib.rs|ALPN、发布订阅、会话、独立流、取消、有界发送、连接传输统计|公共 Rust API；底层接口耦合 Quinn|
-|对象发送|crates/peri-native/src/send.rs|写入、等待确认、发送槽释放和RESET(1)|内部执行器；Session与修复适配器共用，ObjectSend仍从crate根导出|
-|操作期限|crates/peri-native/src/deadline.rs|绝对期限及异步操作前后检查|内部模块；跨阶段传递同一时刻，不将剩余时长重新计时|
-|对象接收|crates/peri-native/src/receive.rs|流取消保护、四路恢复、四槽有序保留和期限诊断|内部模块；通过Session/Subscriber接入，四路及保留候选默认关闭|
-|对象修复内核|crates/peri-native/src/repair.rs|可选分片、单丢片恢复、SHA256、有界重组和额外字节预算|公共实验API；媒体层协商后接入有界适配器，默认关闭，尚无冻结改善结论|
-|修复收发适配|crates/peri-native/src/repair/transport.rs|有界并发收片、确认、取消、重组与原对象回退|内部实现；经Publisher/Subscriber供Relay和播放器使用，实验开关默认关闭|
-|线格式|peri-native/src/wire.rs|有界控制消息和对象头/FIN 校验|内部模块；独立实现依据协议文档而非调用此模块|
-|媒体层|peri-native/src/media.rs|Catalog、Track、Frame、Publisher、Subscriber、DecodeBuffer|公共 Rust API；调用方提供编码数据和真实解码确认|
-|分发服务|peri-native/src/relay.rs|单资源接入、逐观看者帧数/字节配额、异步发送及反馈转发|公共库；不是完整资源管理平台|
-|鉴权|peri-native/src/auth.rs|发布/订阅角色凭据校验|公共 API；没有账号体系、令牌轮换服务|
-|反馈与测量|peri-native/src/feedback.rs|关键帧请求、接收报告、有界邮箱与日志|协议处理内部封装；请求/报告类型和方法公开|
-|媒体策略|peri-native/src/adaptation.rs|单观看端目标码率、切换调度|可选实验；默认关闭，不是固定线协议必选算法|
-|AV1 文件适配|peri-native/src/av1.rs|有界 IVF 导入和录制、探测元数据检查|工具适配；不要求第三方使用 IVF|
-|命令与示例|peri-native/src/bin/peri*、examples|证书初始化、Relay、文件/实时发布、观看录制|应用层，非 SDK 协议要求|
-|共享播放工具|peri-native/src/playback.rs|AV1解码、单调时钟、有界GOP调度|公共可选工具；接入方可使用自有解码与呈现|
-|实时测试源|scripts/live-av1-worker.py|PyAV AV1合成编码源|内部验证工具，不属于SDK要求|
+| 层/模块       | 代码位置                                   | 已有职责                                                   | 边界与状态                                                            |
+| ------------- | ------------------------------------------ | ---------------------------------------------------------- | --------------------------------------------------------------------- |
+| 共用类型      | crates/peri-types                          | 配置、缓冲策略、能力与协商结果                             | 无网络 I/O；与原型共用                                                |
+| 会话协商      | crates/peri-session                        | 能力校验、配置选择、握手状态机与旧控制编解码               | 原生路径复用其协商逻辑，采用自己的控制消息                            |
+| 通用调度原型  | crates/peri-scheduler                      | 依赖、过期与队列计费                                       | 独立原型；原生媒体层未依赖该 crate                                    |
+| 原生会话/对象 | crates/peri-native/src/lib.rs              | ALPN、发布订阅、会话、独立流、取消、有界发送、连接传输统计 | 公共 Rust API；底层接口耦合 Quinn                                     |
+| 对象发送      | crates/peri-native/src/send.rs             | 写入、等待确认、发送槽释放和RESET(1)                       | 内部执行器；Session与修复适配器共用，ObjectSend仍从crate根导出        |
+| 操作期限      | crates/peri-native/src/deadline.rs         | 绝对期限及异步操作前后检查                                 | 内部模块；跨阶段传递同一时刻，不将剩余时长重新计时                    |
+| 对象接收      | crates/peri-native/src/receive.rs          | 流取消保护、四路恢复、四槽有序保留和期限诊断               | 内部模块；通过Session/Subscriber接入，四路及保留候选默认关闭          |
+| 对象修复内核  | crates/peri-native/src/repair.rs           | 可选分片、单丢片恢复、SHA256、有界重组和额外字节预算       | 公共实验API；媒体层协商后接入有界适配器，默认关闭，尚无冻结改善结论   |
+| 修复收发适配  | crates/peri-native/src/repair/transport.rs | 有界并发收片、确认、取消、重组与原对象回退                 | 内部实现；经Publisher/Subscriber供Relay和播放器使用，实验开关默认关闭 |
+| 线格式        | peri-native/src/wire.rs                    | 有界控制消息和对象头/FIN 校验                              | 内部模块；独立实现依据协议文档而非调用此模块                          |
+| 媒体层        | peri-native/src/media.rs                   | Catalog、Track、Frame、Publisher、Subscriber、DecodeBuffer | 公共 Rust API；调用方提供编码数据和真实解码确认                       |
+| 分发服务      | peri-native/src/relay.rs                   | 单资源接入、逐观看者帧数/字节配额、异步发送及反馈转发      | 公共库；不是完整资源管理平台                                          |
+| 鉴权          | peri-native/src/auth.rs                    | 发布/订阅角色凭据校验                                      | 公共 API；没有账号体系、令牌轮换服务                                  |
+| 反馈与测量    | peri-native/src/feedback.rs                | 关键帧请求、接收报告、有界邮箱与日志                       | 协议处理内部封装；请求/报告类型和方法公开                             |
+| 媒体策略      | peri-native/src/adaptation.rs              | 单观看端目标码率、切换调度                                 | 可选实验；默认关闭，不是固定线协议必选算法                            |
+| AV1 文件适配  | peri-native/src/av1.rs                     | 有界 IVF 导入和录制、探测元数据检查                        | 工具适配；不要求第三方使用 IVF                                        |
+| 命令与示例    | peri-native/src/bin/peri\*、examples       | 证书初始化、Relay、文件/实时发布、观看录制                 | 应用层，非 SDK 协议要求                                               |
+| 共享播放工具  | peri-native/src/playback.rs                | AV1解码、单调时钟、有界GOP调度                             | 公共可选工具；接入方可使用自有解码与呈现                              |
+| 实时测试源    | scripts/live-av1-worker.py                 | PyAV AV1合成编码源                                         | 内部验证工具，不属于SDK要求                                           |
 
 ## 给外部开发者保留的路径
 
@@ -56,7 +56,7 @@ C++ SDK、OBS 插件或独立实现互通证明。现有 Rust/TypeScript 互通�
 内部研发工具独立管理依赖和锁文件，不作为第三方接入模块或对外SDK能力。
 协商状态机接收中性的传输就绪通知；具体传输认证、ALPN和版本检查由连接层负责。
 
-## 当前重构约束
+## 当前约束
 
 Session负责会话、角色和连接所有权；send.rs负责对象写入及传输确认，receive.rs负责读取和取消。
 普通对象与修复片共用发送执行器和Deadline，修复适配器只安排分片工作，不另写一套QUIC发送逻辑。
@@ -86,18 +86,3 @@ Limits.buffered_bytes按观看者限制三个阶段保留的Frame.payload字节�
 
 真实QUIC回归将观看者单流窗口限制为4096字节，暂停读取256KiB帧，并验证恢复反馈150ms内到达源端。
 恢复旧的阻塞等待实现会使该测试超时；重构实现通过。这证明反馈不再等待媒体写入结束，不等于弱网冻结已经下降。
-
-## 架构评估与后续验收
-
-|领域|当前判断|后续工作与验收|
-|---|---|---|
-|会话与线格式|协商、鉴权、封装边界已有测试；原生会话API仍依赖Quinn|先稳定对象/取消/交付契约，再分离执行器接口；替换传输不能改变媒体语义|
-|Relay控制与数据进度|已将待写入纳入事件循环，避免慢写阻塞恢复反馈|保留写阻塞夹具；补充持续反馈与多观看者压力场景|
-|资源配额|已覆盖Relay每观看者的排队、待写入和待确认负载|统一接收、重组、封装及传输窗口的账目；验证取消后占用回落及多连接总上限|
-|有序交付与媒体依赖|原始接收策略分散；修复仍靠组间ACK串行保持顺序|建立有界交付窗口，明确何时等待、越过缺口或恢复；关键帧胜出不能破坏后续依赖|
-|修复与拥塞|协商和完整性已接通，但弱网候选仍未通过|在固定画质、期限、带宽下比较原对象与修复；记录额外流量、冻结和失败率|
-|多观看者适配|观看者队列已隔离；源端码率反馈主要针对单观看者|定义多观看者报告聚合策略，验证慢观看者不会拖低其他观看者的有效吞吐|
-|诊断身份|当前日志主要靠进程、流和媒体序号关联|补足连接及发布生命周期身份，跨Relay关联时不得把不同连接的同号流视作同一对象|
-
-实施顺序为交付契约、完整资源账目、多观看者策略和诊断身份。每一步应替换正式路径中的重复逻辑，
-并提供能让旧实现失败的回归测试；新增crate数量和文档篇幅不作为架构成熟度指标。
