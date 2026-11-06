@@ -9,6 +9,7 @@ import json
 import os
 import queue
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import threading
@@ -278,6 +279,21 @@ def main():
     if args.mode == "publish":
         publish(args)
     else:
+        # Verify the native subscriber before accepting HTTP viewers.
+        # 开放观看端口前验证原生订阅程序，避免旧版本对每个观众重复返回 503。
+        binary = shutil.which(args.peri)
+        if binary is None:
+            parser.error(f"找不到原生订阅程序 {args.peri}，请用 --peri 指定其路径")
+        try:
+            help_result = subprocess.run([binary, "--help"], capture_output=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            parser.error(f"无法验证订阅程序 {binary}：{error}")
+        if help_result.returncode or b"av-subscribe" not in help_result.stdout:
+            parser.error(f"{binary} 未提供 av-subscribe；请同步原生源码并运行 "
+                         "cargo build --release --locked -p peri-native --bin peri，"
+                         "然后用 --peri 指定新程序")
+        args.peri = binary
+        print(f"PERI viewer subscriber: {binary}", flush=True)
         if not 0 <= args.port <= 65535:
             parser.error("--port must be between 0 and 65535")
         if not os.environ.get("PERI_SUBSCRIBE_TOKEN"):
