@@ -33,7 +33,10 @@ def publish(args):
     # Listen only on loopback for the local OBS program feed.
     # OBS 节目输入只监听回环地址。
     source = "pipe:0" if args.stdin_program else args.file or "tcp://127.0.0.1:4455?listen=1"
-    with av.open(source, format="nut" if args.stdin_program else "matroska") as container:
+    # The local pipe already declares both codecs. Limit startup probing on that path.
+    # 本机管道已经声明两条轨道的编码，仅在这条路径限制开播探测。
+    options = {"probesize": "262144", "analyzeduration": "250000"} if args.stdin_program else {}
+    with av.open(source, format="nut" if args.stdin_program else "matroska", options=options) as container:
         video, = container.streams.video
         audio, = container.streams.audio
         v, a = video.codec_context, audio.codec_context
@@ -165,6 +168,27 @@ class ProgramFeed:
                 continue
 
 
+class ViewerSocket:
+    """Keep the first HTTP write failure across WebM finalization.
+    WebM 收尾时保留首次 HTTP 写入错误，避免重复写断开的连接。
+    """
+    def __init__(self, stream):
+        self.stream = stream
+        self.failed = None
+
+    def writable(self):
+        return True
+
+    def write(self, data):
+        if self.failed is not None:
+            return len(data)
+        try:
+            return self.stream.write(data)
+        except OSError as error:
+            self.failed = error
+            raise
+
+
 class Viewer(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
@@ -181,6 +205,15 @@ let retry;
 v.onplaying=()=>{clearTimeout(retry);statusLine.textContent=v.muted?'直播中 · 可在播放器中开启声音':''};
 v.onvolumechange=()=>{if(!v.paused) v.onplaying()};
 v.onwaiting=()=>{statusLine.textContent='正在等待直播画面…'};
+// Catch up gradually only when surplus media has accumulated.
+// 只在已缓冲媒体积压时轻微追帧；缓冲不足时恢复原速。
+v.preservesPitch=true;
+v.ontimeupdate=()=>{
+  if(v.paused || v.seeking || !v.buffered.length) return;
+  const lead=v.buffered.end(v.buffered.length-1)-v.currentTime;
+  if(lead>0.65 && v.playbackRate===1) v.playbackRate=1.04;
+  if(lead<0.4 && v.playbackRate===1.04) v.playbackRate=1;
+};
 function reconnect(){
   clearTimeout(retry);
   statusLine.textContent='直播暂时不可用，正在重新连接…';
@@ -201,7 +234,7 @@ v.onerror=()=>{if(!v.canPlayType('video/webm; codecs="av01.0.12M.08,opus"')){
             self.send_error(404)
             return
         if not self.server.slots.acquire(blocking=False):
-            self.send_error(503)
+            self.send_error(503, "viewer limit reached")
             return
         try:
             with self.server.feed_lock:
@@ -226,8 +259,12 @@ v.onerror=()=>{if(!v.canPlayType('video/webm; codecs="av01.0.12M.08,opus"')){
                     if not feed.viewers and self.server.feed is feed:
                         self.server.feed = None
                         feed.child.terminate()
-        except (EOFError, OSError, ValueError) as error:
-            self.log_message("stream ended: %s", error)
+        except (EOFError, OSError, ValueError, av.error.FFmpegError) as error:
+            sink = getattr(self, "socket_sink", None)
+            if sink and sink.failed is not None:
+                self.log_message("viewer HTTP write ended: %s", sink.failed)
+            else:
+                self.log_message("stream ended: %s", error)
             if not getattr(self, "streaming", False):
                 self.send_error(503)
         finally:
@@ -236,8 +273,9 @@ v.onerror=()=>{if(!v.canPlayType('video/webm; codecs="av01.0.12M.08,opus"')){
     def remux(self, feed, viewer, first, video, audio):
         self.streaming = True
         self.connection.settimeout(5)
-        with av.open(self.wfile, "w", format="webm",
-                     options={"live": "1", "cluster_time_limit": "250"}) as out:
+        socket_sink = self.socket_sink = ViewerSocket(self.wfile)
+        with av.open(socket_sink, "w", format="webm",
+                     options={"live": "1", "cluster_time_limit": "100", "flush_packets": "1"}) as out:
             vs = out.add_stream("libaom-av1", rate=max(1, min(120, round(1_000_000 / first[2]))))
             vs.codec_context.thread_count = 1
             vs.width, vs.height = video["width"], video["height"]
@@ -260,7 +298,14 @@ v.onerror=()=>{if(!v.canPlayType('video/webm; codecs="av01.0.12M.08,opus"')){
                 pkt.time_base = CLOCK
                 pkt.pts = pkt.dts = pts - origin
                 pkt.duration, pkt.is_keyframe = duration, tag != 2
-                out.mux(pkt)
+                try:
+                    out.mux(pkt)
+                except av.error.FFmpegError:
+                    if socket_sink.failed is not None:
+                        raise socket_sink.failed from None
+                    raise
+                if socket_sink.failed is not None:
+                    raise socket_sink.failed
                 packet = feed.next_packet(viewer)
 
 
