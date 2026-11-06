@@ -2,7 +2,7 @@
 use super::{Error, SETUP, connect, hello};
 use peri_native::{
     media::{DecodeBuffer, Event, FrameKind, Subscriber},
-    playback::{Decoder, PlaybackClock},
+    playback::{Decoder, Delivery, PlaybackClock, ReorderWindow},
 };
 use std::{
     process::Stdio,
@@ -266,6 +266,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
         let mut waiting_key = true;
 
         let mut previous = 0;
+        let mut window = ReorderWindow::new(track.id);
         let mut progress = Instant::now();
         while stats.decoded < count {
             if progress.elapsed() > Duration::from_secs(10) {
@@ -273,30 +274,63 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
             }
             // 参考链失效后跳过旧依赖负载，避免旧对象反复占满读取预算。
             let receive_started = Instant::now();
-            let received = if retain_receive {
-                subscriber
-                    .recv_retained(
-                        SETUP,
-                        if waiting_key {
-                            recovery_residence
-                        } else {
-                            Duration::from_millis(150)
-                        },
-                        waiting_key,
-                    )
-                    .await?
-            } else if waiting_key {
-                if concurrent_recovery {
-                    subscriber
-                        .recv_recovery_concurrent(SETUP, recovery_residence)
-                        .await?
-                } else {
-                    subscriber.recv_recovery(SETUP, recovery_residence).await?
-                }
+            if waiting_key {
+                stats.dropped += window.clear() as u32;
+            }
+            let delivery = if let Some(delivery) = window.poll(previous, receive_started) {
+                Some(delivery)
             } else {
-                subscriber
-                    .recv_live(SETUP, Duration::from_millis(150))
-                    .await?
+                let read = async {
+                    if retain_receive {
+                        subscriber
+                            .recv_retained(
+                                SETUP,
+                                if waiting_key {
+                                    recovery_residence
+                                } else {
+                                    Duration::from_millis(150)
+                                },
+                                waiting_key,
+                            )
+                            .await
+                    } else if waiting_key {
+                        if concurrent_recovery {
+                            subscriber
+                                .recv_recovery_concurrent(SETUP, recovery_residence)
+                                .await
+                        } else {
+                            subscriber.recv_recovery(SETUP, recovery_residence).await
+                        }
+                    } else {
+                        subscriber
+                            .recv_live(SETUP, Duration::from_millis(150))
+                            .await
+                    }
+                };
+                let incoming = match window.deadline() {
+                    Some(end) => match tokio::time::timeout_at(end.into(), read).await {
+                        Ok(result) => result?,
+                        Err(_) => continue,
+                    },
+                    None => read.await?,
+                };
+                let arrived = Instant::now();
+                match incoming {
+                    Some(frame) if !waiting_key => match window.offer(frame, previous, arrived) {
+                        Some(event) => Some(event),
+                        None => continue,
+                    },
+                    Some(frame) => Some(Delivery::Frame(frame, arrived)),
+                    None => None,
+                }
+            };
+            let (received, arrived) = match delivery {
+                Some(Delivery::Frame(frame, arrived)) => (Some(frame), arrived),
+                Some(Delivery::Discarded) => {
+                    stats.dropped += 1;
+                    continue;
+                }
+                None => (None, receive_started),
             };
             // 只记录阶段耗时和帧号，不记录媒体负载；空结果是本地放弃，不等同于网络丢包。
             if trace_stages {
@@ -337,6 +371,12 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
             if frame.track != track.id {
                 continue;
             }
+            // 迟到的旧关键帧也不能重置播放时钟。
+            // A late keyframe must not rebase the playback clock.
+            if frame.sequence <= previous {
+                stats.dropped += 1;
+                continue;
+            }
             if waiting_key && frame.kind != FrameKind::Key {
                 // The control layer rate-limits retries, including initial join.
                 subscriber
@@ -349,9 +389,6 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
             if waiting_key {
                 clock.rebase(frame.timestamp_us, Instant::now())?;
                 waiting_key = false;
-            }
-            if frame.sequence <= previous {
-                return Err("playback requires ordered media".into());
             }
             if previous != 0
                 && frame.dependencies.iter().any(|id| *id > previous)
@@ -381,7 +418,7 @@ async fn play_once(args: &[String], stats: &mut Stats) -> Result<(), Error> {
                 frame,
                 now,
                 if fifo {
-                    now + Duration::from_millis(agreement.buffer.maximum_ms.into())
+                    arrived + Duration::from_millis(agreement.buffer.maximum_ms.into())
                 } else {
                     target + Duration::from_millis(120)
                 },

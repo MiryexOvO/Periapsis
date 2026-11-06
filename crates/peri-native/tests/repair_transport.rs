@@ -331,3 +331,40 @@ async fn relay_forwards_feedback_while_object_write_is_blocked() -> Result {
     assert_eq!(forwarded??.after_sequence, 77);
     Ok(())
 }
+
+// 关键帧保留原优先级；可保护参考帧的校验片与数据片同批发出。
+// Preserve keyframe priority and send a reference frame's parity in its first flight.
+#[tokio::test]
+async fn publisher_uses_one_flight_or_raw_stream() -> Result {
+    let (_pair, sender, mut receiver) = sessions().await?;
+    let publisher = Publisher::new(sender, catalog(), BUDGET).await?;
+    assert_eq!(receiver.recv(BUDGET).await?.sequence, 0);
+    for (sequence, size, kind) in [
+        (1, 2100, FrameKind::Key),
+        (2, 2100, FrameKind::Reference),
+        (3, 6000, FrameKind::Reference),
+    ] {
+        let mut original = frame(sequence, size);
+        original.kind = kind;
+        if kind == FrameKind::Reference {
+            original.dependencies = vec![sequence - 1];
+        }
+        publisher.send(&original, BUDGET).await?;
+        if sequence == 2 {
+            let mut indices = Vec::new();
+            for _ in 0..4 {
+                let part = repair::Fragment::from_object(receiver.recv(BUDGET).await?)?;
+                assert_eq!(part.group(), sequence);
+                indices.push(part.index());
+            }
+            indices.sort_unstable();
+            assert_eq!(indices, [0, 1, 2, 3]);
+        } else {
+            assert_eq!(
+                receiver.recv(BUDGET).await?,
+                original.to_object(&catalog())?
+            );
+        }
+    }
+    Ok(())
+}

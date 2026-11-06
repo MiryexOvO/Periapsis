@@ -1,4 +1,7 @@
 //! 传输无关的AV1解码、单调播放时钟及单视频GOP调度。
+mod delivery;
+pub use delivery::{Delivery, ReorderWindow};
+
 use crate::{
     Error,
     av1::IvfWriter,
