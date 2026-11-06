@@ -162,7 +162,7 @@ def main():
         parser.add_argument(name)
     parser.add_argument("--peri", default="peri")
     parser.add_argument("--file", type=Path, help="pace a local AV1/Opus WebM fixture")
-    parser.add_argument("--bind", default="127.0.0.1", help="HTTP listen address")
+    parser.add_argument("--bind", help="HTTP listen address")
     parser.add_argument("--port", type=int, default=0, help="HTTP listen port; 0 selects an available port")
     args = parser.parse_args()
     if args.mode == "publish":
@@ -171,8 +171,13 @@ def main():
         if not 0 <= args.port <= 65535:
             parser.error("--port must be between 0 and 65535")
         if not os.environ.get("PERI_SUBSCRIBE_TOKEN"):
-            parser.error("missing PERI_SUBSCRIBE_TOKEN; for NAT setup use peri-nat.py watch")
-        with ThreadingHTTPServer((args.bind, args.port), Viewer) as server:
+            parser.error("missing PERI_SUBSCRIBE_TOKEN; use peri-server.py watch")
+        host, sep, relay_port = args.address.rpartition(":")
+        wildcard = sep and host == "0.0.0.0"
+        if wildcard:
+            args.address = f"127.0.0.1:{relay_port}"
+        bind = args.bind or ("0.0.0.0" if wildcard else "127.0.0.1")
+        with ThreadingHTTPServer((bind, args.port), Viewer) as server:
             server.config = args
             server.slots = threading.BoundedSemaphore(4)
             print(f"http://{server.server_address[0]}:{server.server_port}/", flush=True)

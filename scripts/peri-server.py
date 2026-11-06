@@ -1,4 +1,4 @@
-"""Run a PERI relay behind IPv4 NAT. / 启动共享 IPv4 NAT 后的 PERI 服务。"""
+"""Configure and run a PERI server. / 配置并运行 PERI 服务。"""
 import argparse
 import base64
 import ipaddress
@@ -6,11 +6,12 @@ import json
 import os
 from pathlib import Path
 import secrets
+import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = Path.home() / ".config" / "peri" / "nat.json"
+CONFIG = Path.home() / ".config" / "peri" / "server.json"
 PUBLISH = "PERI_PUBLISH_TOKEN"
 SUBSCRIBE = "PERI_SUBSCRIBE_TOKEN"
 
@@ -27,20 +28,46 @@ def prompt(label, default=None):
     return value or default
 
 
-def setup():
+def tls_files(binary):
+    # Prefer complete pairs in known deployment locations. / 优先选用常见部署目录中的完整证书对。
+    dirs = (Path.cwd(), Path("/etc/peri"), ROOT / "dist/peri-local", CONFIG.parent / "tls")
+    pair = next((d for d in dirs if all((d / f).is_file() for f in ("cert.der", "key.key"))), None)
+    suggested = pair or Path.cwd()
+    value = prompt("Relay 证书路径（输入 new 创建新证书对）",
+                   str(suggested / "cert.der") if pair or (suggested / "cert.der").exists() else "new")
+    if value != "new":
+        cert = Path(value).expanduser().resolve()
+        if not cert.is_file():
+            raise ValueError(f"找不到证书 {cert}；请填写已有证书路径，或在证书提示处输入 new")
+        suggested_key = cert.with_name("key.key")
+        if not suggested_key.is_file():
+            print(f"证书旁未找到 {suggested_key}。可填写配套私钥的实际路径，或输入 new 创建新证书对并重新分发推流码。")
+        value = prompt("配套私钥路径", str(suggested_key))
+        if value != "new":
+            key = Path(value).expanduser().resolve()
+            if not key.is_file():
+                raise ValueError(f"找不到配套私钥 {key}；请重新运行 setup，填写实际路径或输入 new")
+            return cert, key, prompt("证书服务器名", "localhost")
+    CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(prefix="tls-", dir=CONFIG.parent))
+    subprocess.run([binary, "init", str(directory)], check=True)
+    return directory / "cert.der", directory / "key.key", "localhost"
+
+
+def setup(args, binary):
     if CONFIG.exists():
         raise ValueError(f"已有配置 {CONFIG}，端口可直接编辑，令牌会保留")
-    public = str(ipaddress.IPv4Address(prompt("共享公网 IPv4")))
-    external = port(prompt("主播连接的公网 UDP 端口"))
-    udp = port(prompt("Relay 监听的内网 UDP 端口", "4444"))
-    tcp = port(prompt("网页监听的内网 TCP 端口"))
-    web_external = port(prompt("观众连接的公网 TCP 端口", str(tcp)))
+    public = str(ipaddress.IPv4Address(prompt("主播和观众可访问的服务器 IPv4")))
+    if public == "0.0.0.0":
+        raise ValueError("请填写客户端可访问的地址；0.0.0.0 用于服务端监听")
+    udp = port(prompt("Relay 监听 UDP 端口", "4444"))
+    tcp = port(prompt("网页监听 TCP 端口"))
+    external = args.public_udp or udp
+    web_external = args.public_tcp or tcp
     resource = prompt("直播资源名", "live/av1")
     if not resource.isascii() or len(resource) > 256 or any(not (c.isalnum() or c in "/_-.") for c in resource):
         raise ValueError("资源名无效")
-    cert = Path(prompt("Relay 证书路径", "./cert.der")).expanduser().resolve(strict=True)
-    key = Path(prompt("Relay 私钥路径", str(cert.with_name("key.key")))).expanduser().resolve(strict=True)
-    name = prompt("证书服务器名", "localhost")
+    cert, key, name = tls_files(binary)
     # Adopt existing credentials together; never rotate a live relay implicitly.
     # 成对复用已有凭据，避免隐式轮换正在使用的 Relay 令牌。
     existing = {}
@@ -79,9 +106,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("setup", "relay", "watch", "link"))
     parser.add_argument("--peri", help="path to the peri executable")
+    parser.add_argument("--public-udp", type=port, help="advertised UDP port if different (setup)")
+    parser.add_argument("--public-tcp", type=port, help="advertised HTTP port if different (setup)")
     args = parser.parse_args()
+    # Migrate the old private file without copying or rotating tokens.
+    # 迁移旧配置，保留权限与原令牌。
+    legacy = CONFIG.with_name("nat.json")
+    if not CONFIG.exists() and legacy.is_file():
+        os.link(legacy, CONFIG)
+        legacy.unlink()
+    exe = "peri.exe" if os.name == "nt" else "peri"
+    binary = args.peri or next((str(p) for p in (ROOT / "target/release" / exe, ROOT / "target/debug" / exe,
+                                                 Path("/opt/peri/bin/peri")) if p.is_file()), "peri")
     if args.action == "setup":
-        setup()
+        setup(args, binary)
         return
     if not CONFIG.is_file():
         parser.error("先运行 setup")
@@ -95,8 +133,6 @@ def main():
                       token=c["tokens"][PUBLISH])
         print("peri://v1/" + base64.urlsafe_b64encode(json.dumps(invite).encode()).decode().rstrip("="))
         return
-    binary = args.peri or next((str(p) for p in (ROOT / "target/release/peri", ROOT / "target/debug/peri",
-                                                 Path("/opt/peri/bin/peri")) if p.is_file()), "peri")
     env = dict(os.environ, **{SUBSCRIBE: c["tokens"][SUBSCRIBE]})
     if args.action == "relay":
         env[PUBLISH] = c["tokens"][PUBLISH]
@@ -112,5 +148,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, OSError, EOFError) as error:
+    except (ValueError, OSError, EOFError, subprocess.CalledProcessError) as error:
         sys.exit(str(error))

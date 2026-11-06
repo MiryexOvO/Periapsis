@@ -2,21 +2,17 @@
 
 当前开发入口传输一个 AV1 视频轨和一个 Opus 音轨。网页把两轨按源时间戳重新封装为 WebM，点击原生 video 控件播放。每位观众使用一个 PERI 订阅；当前适配器每进程最多同时四路。此前的共享 JPEG 预览仍可独立使用。
 
-## Linux 共享 IP / NAT 转发
+## 配置和启动服务器
 
-在服务器仓库根目录运行一次 python3 scripts/peri-nat.py setup。按面板逐项填写公网 IPv4、UDP 外部和内部端口、TCP 内部和外部端口，并确认当前 Relay 的证书、私钥和资源名。证书和私钥须与 Relay 配对。配置文件 ~/.config/peri/nat.json 由当前账户私有保存；同一账户后续直接执行：
+在仓库根目录运行一次 `python3 scripts/peri-server.py setup`。填写客户端可访问的 IPv4、Relay 的 UDP 端口及网页 TCP 端口。首次可选 new 生成证书和私钥；使用已有证书时填写与之配套的私钥。替换证书后请重新生成并分发主播邀请。已有凭据会成对复用，首次无凭据时自动生成，保存于当前账户的 ~/.config/peri/server.json。
 
 ~~~sh
-python3 scripts/peri-nat.py relay
-# 在第二个终端启动网页 / Start the web listener in another terminal
-python3 scripts/peri-nat.py watch
-# 在第三个终端只向主播展示邀请 / Display the private OBS invitation
-python3 scripts/peri-nat.py link
+python3 scripts/peri-server.py relay
+python3 scripts/peri-server.py watch
+python3 scripts/peri-server.py link
 ~~~
 
-两种服务均监听 0.0.0.0，观看服务在本机经 127.0.0.1 订阅 Relay。主播用 link 输出的推流码，观众打开 watch 输出的公网网址。面板须分别放行并转发 UDP（主播）和 TCP（网页）。直接转发网页会提供公开 HTTP 观看；如需 HTTPS，可在入口配置 TLS 代理。
-
-初始化优先采用当前环境或已有 /etc/peri/relay.env 中成对的凭据；首次无凭据时自动生成。接管已有服务时，先停止占用对应端口的旧进程，再使用上述命令启动。自动生成新凭据后向主播发放新的推流码。修改端口只需编辑同一配置文件并重启服务。每个终端使用相同的账户和已安装 PyAV 的 Python 环境。
+在不同终端用同一账户运行 Relay 和观看服务；link 输出私有 OBS 邀请。默认两项服务监听 0.0.0.0，向客户端公布相同的端口。对外端口不同时，setup 支持 --public-udp 和 --public-tcp。旧配置在首次使用新入口时自动迁移。手动运行 program-av.py watch 时，传入 0.0.0.0:端口 会自动监听所有 IPv4 接口，并通过回环连接本机 Relay；--bind 可单独指定网页监听地址。
 
 ## 手动启动
 
