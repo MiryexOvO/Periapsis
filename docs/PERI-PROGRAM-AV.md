@@ -2,7 +2,23 @@
 
 当前开发入口传输一个 AV1 视频轨和一个 Opus 音轨。网页把两轨按源时间戳重新封装为 WebM，点击原生 video 控件播放。每位观众使用一个 PERI 订阅；当前适配器每进程最多同时四路。此前的共享 JPEG 预览仍可独立使用。
 
-## 服务器
+## Linux 共享 IP / NAT 转发
+
+在服务器仓库根目录运行一次 python3 scripts/peri-nat.py setup。按面板逐项填写公网 IPv4、UDP 外部和内部端口、TCP 内部和外部端口，并确认当前 Relay 的证书、私钥和资源名。证书和私钥须与 Relay 配对。配置文件 ~/.config/peri/nat.json 由当前账户私有保存；同一账户后续直接执行：
+
+~~~sh
+python3 scripts/peri-nat.py relay
+# 在第二个终端启动网页 / Start the web listener in another terminal
+python3 scripts/peri-nat.py watch
+# 在第三个终端只向主播展示邀请 / Display the private OBS invitation
+python3 scripts/peri-nat.py link
+~~~
+
+两种服务均监听 0.0.0.0，观看服务在本机经 127.0.0.1 订阅 Relay。主播用 link 输出的推流码，观众打开 watch 输出的公网网址。面板须分别放行并转发 UDP（主播）和 TCP（网页）。直接转发网页会提供公开 HTTP 观看；如需 HTTPS，可在入口配置 TLS 代理。
+
+初始化优先采用当前环境或已有 /etc/peri/relay.env 中成对的凭据；首次无凭据时自动生成。接管已有服务时，先停止占用对应端口的旧进程，再使用上述命令启动。自动生成新凭据后向主播发放新的推流码。修改端口只需编辑同一配置文件并重启服务。每个终端使用相同的账户和已安装 PyAV 的 Python 环境。
+
+## 手动启动
 
 构建当前 peri 程序并启动 Relay。向观看进程提供独立订阅令牌。需要 Python 和 PyAV 16.1.0（Windows 开发目录为 dist/live-python）。在服务器上的 PERI 仓库运行：
 
@@ -12,7 +28,7 @@ $env:PERI_SUBSCRIBE_TOKEN = Read-Host "订阅令牌"
 python scripts/program-av.py watch 127.0.0.1:4444 localhost ./cert.der live/av1 --peri ./target/debug/peri.exe
 ~~~
 
-观看页为 http://127.0.0.1:8081/ 。公网部署时将已配置的 HTTPS 代理转发到该端口；远程访问权限由代理管理。Linux 上使用同样的脚本、对应平台构建的 peri，以及安装了 PyAV 的 Python。先前的 peri-viewer.service 启动 JPEG 预览，双轨模式使用上述 watch 命令。
+启动时打印实际监听地址；默认选择空闲端口，也可通过 --bind 和 --port 指定。公网部署时将已配置的 HTTPS 代理转发到该端口；远程访问权限由代理管理。Linux 上使用同样的脚本、对应平台构建的 peri，以及安装了 PyAV 的 Python。先前的 peri-viewer.service 启动 JPEG 预览，双轨模式使用上述 watch 命令。
 
 ## 主播
 
