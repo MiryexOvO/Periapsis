@@ -30,8 +30,8 @@ def pipe_process(args, mode, **pipes):
 def publish(args):
     # Listen only on loopback for the local OBS program feed.
     # OBS 节目输入只监听回环地址。
-    source = args.file or "tcp://127.0.0.1:4455?listen=1"
-    with av.open(source, format="matroska") as container:
+    source = "pipe:0" if args.stdin_program else args.file or "tcp://127.0.0.1:4455?listen=1"
+    with av.open(source, format="nut" if args.stdin_program else "matroska") as container:
         video, = container.streams.video
         audio, = container.streams.audio
         v, a = video.codec_context, audio.codec_context
@@ -67,6 +67,10 @@ def publish(args):
                         time.sleep(max(0, wall + timestamp / 1e6 - time.monotonic()))
                     tag = 3 if packet.stream == audio else (1 if packet.is_keyframe else 2)
                     duration = int(packet.duration * packet.time_base / CLOCK)
+                    # Local bridge fixes video at 30 fps and Opus at 20 ms.
+                    # 本机桥接固定视频为 30 fps、Opus 为 20 ms，NUT 可省略包时长。
+                    if not duration and args.stdin_program:
+                        duration = 20000 if tag == 3 else 33333
                     if not duration:
                         raise ValueError("input packet has no duration")
                     sink.write(HEADER.pack(tag, timestamp, duration, packet.size))
@@ -161,7 +165,9 @@ def main():
     for name in ("address", "name", "cert", "resource"):
         parser.add_argument(name)
     parser.add_argument("--peri", default="peri")
-    parser.add_argument("--file", type=Path, help="pace a local AV1/Opus WebM fixture")
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument("--stdin-program", action="store_true", help="read a live program from stdin")
+    sources.add_argument("--file", type=Path, help="pace a local AV1/Opus WebM fixture")
     parser.add_argument("--bind", help="HTTP listen address")
     parser.add_argument("--port", type=int, default=0, help="HTTP listen port; 0 selects an available port")
     args = parser.parse_args()

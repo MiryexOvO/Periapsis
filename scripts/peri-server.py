@@ -117,10 +117,10 @@ def write_config(config, replace=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("setup", "relay", "watch", "link", "stream-key"))
+    parser.add_argument("action", choices=("setup", "relay", "watch", "link", "stream-key", "watch-port"))
     parser.add_argument("--peri", help="path to the peri executable")
     parser.add_argument("--public-udp", type=port, help="advertised UDP port if different (setup)")
-    parser.add_argument("--public-tcp", type=port, help="advertised HTTP port if different (setup)")
+    parser.add_argument("--public-tcp", type=port, help="advertised HTTP port if different (setup or watch-port)")
     parser.add_argument("--public-ip", type=ipaddress.IPv4Address, help="client-facing IPv4 for link or watch")
     args = parser.parse_args()
     # Migrate the old private file without copying or rotating tokens.
@@ -140,6 +140,14 @@ def main():
     if os.name == "posix" and CONFIG.stat().st_mode & 0o077:
         parser.error(f"凭据文件权限过宽，请运行 chmod 600 {CONFIG}")
     c = json.loads(CONFIG.read_text(encoding="utf8"))
+    if args.action == "watch-port":
+        listen = port(prompt("网页监听 TCP 端口", str(c["tcp"])))
+        default_public = listen if c["web_external"] == c["tcp"] else c["web_external"]
+        public = args.public_tcp or port(prompt("观众访问的公网 TCP 端口", str(default_public)))
+        c.update(tcp=listen, web_external=public)
+        write_config(c, replace=True)
+        print(f"已保存：网页监听 TCP {listen}，公网 TCP {public}。请重启 watch。")
+        return
     if args.action == "stream-key":
         key = prompt("新的 OBS 推流码", "stream")
         if publish_token(key) == c["tokens"][SUBSCRIBE]:
