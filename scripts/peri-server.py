@@ -1,6 +1,6 @@
 """Configure and run a PERI server. / 配置并运行 PERI 服务。"""
 import argparse
-import base64
+import hashlib
 import ipaddress
 import json
 import os
@@ -14,6 +14,14 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG = Path.home() / ".config" / "peri" / "server.json"
 PUBLISH = "PERI_PUBLISH_TOKEN"
 SUBSCRIBE = "PERI_SUBSCRIBE_TOKEN"
+
+
+def publish_token(key):
+    # Encode the user key for the existing PERI authentication field.
+    # 将用户推流码编码为现有 PERI 发布认证字段。
+    if not isinstance(key, str) or not 1 <= len(key.encode("utf8")) <= 128 or not key.isprintable():
+        raise ValueError("推流码应为 1 到 128 字节的可打印文本")
+    return hashlib.sha256(b"peri-stream-key-v1\0" + key.encode("utf8")).hexdigest()
 
 
 def port(value):
@@ -68,6 +76,8 @@ def setup(args, binary):
     resource = prompt("直播资源名", "live/av1")
     if not resource.isascii() or len(resource) > 256 or any(not (c.isalnum() or c in "/_-.") for c in resource):
         raise ValueError("资源名无效")
+    stream_key = prompt("OBS 推流码", "stream")
+    publish_token(stream_key)
     existing = {}
     env_file = Path("/etc/peri/relay.env")
     if env_file.is_file():
@@ -75,22 +85,18 @@ def setup(args, binary):
             k, _, v = line.partition("=")
             if k in (PUBLISH, SUBSCRIBE):
                 existing[k] = v
-    tokens = {}
-    for role in (PUBLISH, SUBSCRIBE):
-        # A stale shell variable must not mask a usable service credential.
-        # 旧终端里的空值或无效值不能遮住服务文件中的有效凭据。
-        candidates = (os.environ.get(role, ""), existing.get(role, ""))
-        for value in candidates:
-            if (32 <= len(value) <= 128 and all("!" <= ch <= "~" for ch in value)
-                    and value not in tokens.values()):
-                tokens[role] = value
-                break
-        else:
-            tokens[role] = secrets.token_hex(32)
-            print(f"{role} 已自动生成，将随配置保存。")
+    candidates = (os.environ.get(SUBSCRIBE, ""), existing.get(SUBSCRIBE, ""))
+    sub_token = next((v for v in candidates if 32 <= len(v) <= 128 and
+                      all("!" <= ch <= "~" for ch in v) and v != publish_token(stream_key)), None)
+    tokens = {SUBSCRIBE: sub_token or secrets.token_hex(32)}
     cert, key, name = tls_files(binary)
     config = dict(public=public, external=external, udp=udp, tcp=tcp, web_external=web_external,
-                  cert=str(cert), key=str(key), name=name, resource=resource, tokens=tokens)
+                  cert=str(cert), key=str(key), name=name, resource=resource, stream_key=stream_key, tokens=tokens)
+    write_config(config)
+    print(f"配置已保存 {CONFIG}；以后使用 relay、watch、link。")
+
+
+def write_config(config, replace=False):
     CONFIG.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     # Atomically install a complete mode-0600 file without replacing a racing setup.
     # 原子安装完整的 0600 配置，不覆盖并发生成的凭据。
@@ -101,15 +107,17 @@ def setup(args, binary):
             json.dump(config, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.link(tmp, CONFIG)
+        if replace:
+            os.replace(tmp, CONFIG)
+        else:
+            os.link(tmp, CONFIG)
     finally:
-        tmp.unlink()
-    print(f"配置已保存 {CONFIG}；以后使用 relay、watch、link。")
+        tmp.unlink(missing_ok=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("setup", "relay", "watch", "link"))
+    parser.add_argument("action", choices=("setup", "relay", "watch", "link", "stream-key"))
     parser.add_argument("--peri", help="path to the peri executable")
     parser.add_argument("--public-udp", type=port, help="advertised UDP port if different (setup)")
     parser.add_argument("--public-tcp", type=port, help="advertised HTTP port if different (setup)")
@@ -132,22 +140,24 @@ def main():
     if os.name == "posix" and CONFIG.stat().st_mode & 0o077:
         parser.error(f"凭据文件权限过宽，请运行 chmod 600 {CONFIG}")
     c = json.loads(CONFIG.read_text(encoding="utf8"))
+    if args.action == "stream-key":
+        key = prompt("新的 OBS 推流码", "stream")
+        if publish_token(key) == c["tokens"][SUBSCRIBE]:
+            parser.error("请选择另一推流码，以便区分发布和订阅凭据")
+        c["stream_key"] = key
+        write_config(c, replace=True)
+        print("推流码已保存，重启 Relay 后生效。")
+        return
     host = str(args.public_ip or c["public"])
     if args.action == "link":
+        suffix = "" if c["external"] == 4444 else f":{c['external']}"
+        print(f"服务器：peri://{host}{suffix}\n推流码：{c.get('stream_key', 'stream')}")
         if host == "0.0.0.0":
-            if not sys.stdin.isatty():
-                parser.error("生成推流码时请用 --public-ip 指定主播可访问的 IPv4")
-            host = str(ipaddress.IPv4Address(prompt("主播可访问的服务器 IPv4")))
-            if host == "0.0.0.0":
-                parser.error("推流码必须填写主播能连接的地址，可用 link --public-ip 指定")
-        invite = dict(address=f"{host}:{c['external']}", name=c["name"], resource=c["resource"],
-                      cert=base64.b64encode(Path(c["cert"]).read_bytes()).decode(),
-                      token=c["tokens"][PUBLISH])
-        print("peri://v1/" + base64.urlsafe_b64encode(json.dumps(invite).encode()).decode().rstrip("="))
+            print("远程 OBS 请把 0.0.0.0 换成服务器可访问的 IP。")
         return
     env = dict(os.environ, **{SUBSCRIBE: c["tokens"][SUBSCRIBE]})
     if args.action == "relay":
-        env[PUBLISH] = c["tokens"][PUBLISH]
+        env[PUBLISH] = publish_token(c.get("stream_key", "stream"))
         command = [binary, "relay", f"0.0.0.0:{c['udp']}", c["cert"], c["key"], c["resource"]]
     else:
         env.pop(PUBLISH, None)
