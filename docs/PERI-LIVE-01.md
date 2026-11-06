@@ -1,7 +1,10 @@
 # PERI 实时 AV1 编码测试源
 
 `peri live` 在运行期间逐帧生成测试画面，由持续运行的 libaom AV1 编码器编码并通过原生 PERI 发布。
-不是预编码文件跳帧；当前是合成画面，尚未接入屏幕、摄像头、麦克风或硬件编码。
+默认使用合成画面。Windows 发布端可在运行同一条 `peri live` 命令之前设置
+`$env:PERI_LIVE_SOURCE = 'desktop'`，通过 PyAV 的 gdigrab 采集整个桌面。
+桌面缩放至 320×180，以 15 fps 发送，仅含视频。多显示器或非 16:9 桌面会压缩到同一画幅。
+要恢复合成源，在发布终端设置 `$env:PERI_LIVE_SOURCE = 'synthetic'` 后重新推流。
 视频固定 320×180、15 fps、YUV420P，编码器目标码率 300 kbit/s，自然关键帧间隔 60 帧。
 
 ## 安装与运行
