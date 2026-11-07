@@ -9,8 +9,9 @@ function periWebTransport(video,config,low,fallback) {
   const canvas=document.querySelector('canvas'),sound=document.querySelector('#sound');
   const status=document.querySelector('[role=status]'),ctx=canvas.getContext('2d',{alpha:false});
   const audio=new AudioContext({latencyHint:'interactive'});
-  const decoders=[],frames=[];
+  const decoders=[],frames=[],audioSources=new Set();
   let closed=false,timer,raf,anchorPts,anchorMs;
+  let playoutMs=55;
   video.hidden=true;canvas.hidden=false;sound.hidden=false;
   sound.textContent='开启声音';
   sound.onclick=async()=>{if(audio.state==='running'){await audio.suspend();sound.textContent='开启声音';}
@@ -19,12 +20,24 @@ function periWebTransport(video,config,low,fallback) {
     if(closed)return;closed=true;clearTimeout(timer);cancelAnimationFrame(raf);
     for(const d of decoders) if(d.state!=='closed')d.close();
     while(frames.length)frames.pop().close();
+    clearAudio();
     wt.close();audio.close().catch(()=>{});canvas.hidden=sound.hidden=true;video.hidden=false;sound.onclick=null;
   }
   function fail(e){if(!closed){console.debug('PERI WebCodecs fallback',e?.message);stop();fallback();}}
   function deadline(){clearTimeout(timer);timer=setTimeout(()=>fail(Error('media timeout')),5000);}
+  function clearAudio(){
+    for(const source of audioSources){source.onended=null;source.stop();source.disconnect();}
+    audioSources.clear();
+  }
+  function rebase(pts,now,discardFrames=false){
+    // Scheduled audio belongs to the old clock; it must not play after a rebase.
+    // 已排程音频属于旧时钟，重定位后取消，避免继续播放旧时间映射的声音。
+    clearAudio();
+    if(discardFrames)while(frames.length)frames.pop().close();
+    anchorPts=pts;anchorMs=now+playoutMs;
+  }
   function wall(pts){
-    if(anchorPts===undefined){anchorPts=pts;anchorMs=performance.now()+55;}
+    if(anchorPts===undefined){anchorPts=pts;anchorMs=performance.now()+playoutMs;}
     return anchorMs+(pts-anchorPts)/1000;
   }
   function render(){
@@ -62,7 +75,26 @@ function periWebTransport(video,config,low,fallback) {
     if(closed)return;
     function output(frame){
       if(isVideo){
-        if(frames.length>=6)frames.shift().close();
+        const arrival=performance.now(),late=arrival-wall(frame.timestamp);
+        // Absorb repeated arrival gaps with at most 250 ms of playout reserve.
+        // 在显示队列耗尽后增加有限缓冲，避免每次网络补发都丢弃整个追赶批次。
+        if(!frames.length && late>30 && late<=220){
+          const reserve=Math.min(250,playoutMs+late+30);
+          if(reserve>playoutMs){
+            clearAudio();anchorMs+=reserve-playoutMs;playoutMs=reserve;
+          }
+        }
+        const capacity=Math.min(20,Math.max(6,Math.ceil(playoutMs*1000/(frame.duration||16667))+2));
+        if(frames.length>=capacity){
+          const oldest=frames.shift(),now=performance.now();
+          // Make the next retained frame due now. Re-anchoring the newest frame
+          // with another reserve can starve rendering if duration overstates cadence.
+          // 队列满时让下一保留帧立即到期，避免错误时长或高帧率导致持续未来排程。
+          if(wall(oldest.timestamp)>now){
+            clearAudio();anchorMs-=wall(frames[0]?.timestamp??frame.timestamp)-now;
+          }
+          oldest.close();
+        }
         frames.push(frame);
       }else{
         try{
@@ -71,7 +103,9 @@ function periWebTransport(video,config,low,fallback) {
           if(delay<-.08 || delay>.35)return;
           const b=audio.createBuffer(frame.numberOfChannels,frame.numberOfFrames,frame.sampleRate);
           for(let i=0;i<frame.numberOfChannels;i++)frame.copyTo(b.getChannelData(i),{planeIndex:i,format:'f32-planar'});
-          const s=audio.createBufferSource();s.buffer=b;s.connect(audio.destination);s.start(audio.currentTime+Math.max(0,delay));
+          const s=audio.createBufferSource();s.buffer=b;s.connect(audio.destination);
+          s.onended=()=>{audioSources.delete(s);s.disconnect();};
+          s.start(audio.currentTime+Math.max(0,delay));audioSources.add(s);
         }finally{frame.close();}
       }
     }
@@ -82,12 +116,21 @@ function periWebTransport(video,config,low,fallback) {
       if(!size || size>1048576)throw Error('invalid media length');
       const timestamp=Number(h.getBigUint64(5)),duration=h.getUint32(13),data=await read(size);
       if(closed)return;
-      if(isVideo && decoder.decodeQueueSize>8){decoder.reset();decoder.configure(settings);needsKey=true;}
+      if(isVideo && decoder.decodeQueueSize>=8){
+        // Yield to native decoder output before declaring a burst an overload.
+        // 补发批次先给原生解码回调调度机会；只有持续堵塞才丢弃依赖链。
+        const until=performance.now()+100;
+        while(!closed && decoder.decodeQueueSize>=8 && performance.now()<until)
+          await new Promise(resolve=>setTimeout(resolve,2));
+        if(closed)return;
+        if(decoder.decodeQueueSize>=8){decoder.reset();decoder.configure(settings);needsKey=true;}
+      }
       if(isVideo && needsKey && !key)continue;
       if(!isVideo && decoder.decodeQueueSize>12)continue;
 
-      if(isVideo && key && (anchorPts===undefined || Math.abs(wall(timestamp)-performance.now())>220)){
-        anchorPts=timestamp;anchorMs=performance.now()+55;
+      if(isVideo && key && (anchorPts===undefined || wall(timestamp)-performance.now() < -220 ||
+          wall(timestamp)-performance.now()>playoutMs+220)){
+        rebase(timestamp,performance.now(),true);
       }
       needsKey=false;
       decoder.decode(new (isVideo?EncodedVideoChunk:EncodedAudioChunk)({type:key?'key':'delta',timestamp,duration,data}));

@@ -718,6 +718,7 @@ dependencies = [
  "base64",
  "peri-native",
  "peri-types",
+ "rcgen",
  "rustls",
  "serde",
  "serde_json",

@@ -2,6 +2,10 @@
 
 主播安装 PERI Windows x64 插件。OBS C++ 输出模块将编码包写入有界环形缓冲，独立线程通过 C ABI 调用同目录的 Rust 动态库 `peri_obs.dll`，直接以 QUIC 发布。主播端只需 OBS 和插件包。服务器端部署 Rust Relay 与 Rust 观看网关。
 
+OBS 32.1.2、NVENC AV1 (`obs_nvenc_av1_tex`) 的 CBR 发布支持主动关键帧恢复：独立反馈线程将已鉴权的下游恢复请求传到本次直播专用编码器，保留码率设置、合并请求并限频。其他编码器/版本/码率模式仍依赖周期关键帧。该接入没有改变网关每轨可靠流的传输方式，也不代表公网弱网验收已经完成。
+
+Active keyframe recovery is supported for OBS 32.1.2 NVENC AV1 CBR publishing. An independent feedback worker forwards authenticated recovery demand to a dedicated streaming encoder, preserving bitrate settings and pacing requests. Other configurations retain periodic recovery; browser stream delivery and public-network validation remain separate.
+
 ## 更新已有服务器
 
 在 PERI 仓库执行：

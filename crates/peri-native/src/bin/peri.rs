@@ -77,7 +77,14 @@ fn transport() -> Result<Arc<quinn::TransportConfig>, Error> {
         _ => return Err("PERI_ACK_MODE must be default or frequent".into()),
     }
     config.max_concurrent_bidi_streams(1_u32.into());
-    config.max_concurrent_uni_streams(8_u32.into());
+    // Negotiated stream credit must match the publisher's experimental window.
+    // 发布端扩大本地窗口仍受对端 QUIC 开流信用限制；连接字节上限保持不变。
+    let streams = match std::env::var("PERI_UNI_STREAM_WINDOW").as_deref() {
+        Ok("32") => 32_u32,
+        Ok("8") | Err(_) => 8_u32,
+        _ => return Err("PERI_UNI_STREAM_WINDOW must be 8 or 32".into()),
+    };
+    config.max_concurrent_uni_streams(streams.into());
     config.stream_receive_window((1024 * 1024 + 128_u32).into());
     config.receive_window((8 * 1024 * 1024_u32).into());
     config.max_idle_timeout(Some(Duration::from_secs(10).try_into()?));
@@ -204,7 +211,14 @@ async fn handle(
     } else {
         let _lease = Lease::claim(slot.clone())?;
         let source = Subscriber::new(session, SETUP).await?;
-        let relay = Arc::new(Relay::new(source.catalog().clone(), Limits::default())?);
+        let mut limits = Limits::default();
+        if std::env::var("PERI_UNI_STREAM_WINDOW").as_deref() == Ok("32") {
+            // A completed uplink burst must fit the fan-out queue before its task runs.
+            // 上行补发批次需容纳到分发任务获调度；增加帧槽但收紧每观众字节额度。
+            limits.queued_frames = 64;
+            limits.buffered_bytes = 2 * 1024 * 1024;
+        }
+        let relay = Arc::new(Relay::new(source.catalog().clone(), limits)?);
         slot.lock().expect("resource lock").relay = Some(relay.clone());
         println!("PERI_RESOURCE_READY");
         relay.ingest(source, SETUP).await?;

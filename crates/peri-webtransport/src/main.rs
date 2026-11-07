@@ -39,6 +39,12 @@ async fn raw_track(
                 out.write_all(&f.payload).await
             })
             .await??;
+            if f.kind == FrameKind::Key {
+                peri_native::trace(
+                    "gateway_key_write",
+                    serde_json::json!({"sequence":f.sequence,"pts_us":f.timestamp_us,"codec":track.codec,"bytes":f.payload.len()}),
+                );
+            }
         }
         f = timeout(LIMIT, rx.recv()).await??;
     }

@@ -151,7 +151,20 @@ async fn receive(cfg: &WatchConfig, hub: &Announce) -> Result<(), Error> {
     sub.request_keyframe_after(1, 0).await?;
     let mut video = None;
     loop {
-        let frame = sub.recv(BUDGET).await?;
+        // A cancelled media object is a local dependency gap, not a new catalog.
+        // 局部 RESET(1) 或驻留超时只进入等关键帧状态，保留 Feed 和浏览器会话。
+        let Some(frame) = sub.recv_live(BUDGET, Duration::from_millis(750)).await? else {
+            if let Some(last) = video.take() {
+                sub.request_keyframe_after(1, last).await?;
+            }
+            continue;
+        };
+        if frame.kind == FrameKind::Key {
+            peri_native::trace(
+                "gateway_key_received",
+                serde_json::json!({"sequence":frame.sequence,"pts_us":frame.timestamp_us,"bytes":frame.payload.len()}),
+            );
+        }
         match frame.kind {
             FrameKind::Reference if !video.is_some_and(|id| frame.dependencies == [id]) => {
                 if let Some(last) = video.take() {

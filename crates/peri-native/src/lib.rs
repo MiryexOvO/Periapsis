@@ -143,6 +143,7 @@ pub struct Session {
     agreement: Agreement,
     publisher: bool,
     send_slots: std::sync::Arc<tokio::sync::Semaphore>,
+    send_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     feedback: feedback::Feedback,
     retained: receive::Retained,
 }
@@ -222,6 +223,21 @@ impl Session {
             .await
     }
 
+    /// Configure bounded outstanding objects before media starts; bytes include framing.
+    /// 媒体开始前配置在途对象与字节上限，避免固定小窗口限制高时延链路吞吐。
+    pub fn set_send_limits(&mut self, objects: usize, bytes: usize) -> Result<(), Error> {
+        if !(1..=32).contains(&objects)
+            || !(1024 * 1024 + 128..=8 * 1024 * 1024).contains(&bytes)
+            || std::sync::Arc::strong_count(&self.send_slots) != 1
+            || std::sync::Arc::strong_count(&self.send_bytes) != 1
+        {
+            return Err(Error::Protocol("invalid or active send limits"));
+        }
+        self.send_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(objects));
+        self.send_bytes = std::sync::Arc::new(tokio::sync::Semaphore::new(bytes));
+        Ok(())
+    }
+
     pub(crate) async fn start_send_until(
         &self,
         object: &Object,
@@ -230,7 +246,14 @@ impl Session {
         if !self.publisher {
             return Err(Error::Protocol("subscriber cannot publish"));
         }
-        send::start(&self.guard.0, self.send_slots.clone(), object, deadline).await
+        send::start(
+            &self.guard.0,
+            self.send_slots.clone(),
+            self.send_bytes.clone(),
+            object,
+            deadline,
+        )
+        .await
     }
 
     /// Live receive: bound an accepted object's residence separately from idle waiting.
@@ -349,6 +372,26 @@ impl Session {
         .await
         .map_err(|_| Error::Timeout)?
     }
+
+    // Relay media ingestion tolerates RESET(1), while catalog/strict reads stay strict.
+    // Relay 媒体接入允许局部取消；目录与严格读取保持原有校验。
+    pub(crate) async fn recv_ingest_shared(&self, budget: Duration) -> Result<Object, Error> {
+        if self.retained.active() || self.publisher {
+            return Err(Error::Protocol("invalid ingest receive"));
+        }
+        tokio::time::timeout(budget, async {
+            loop {
+                let stream = self.guard.0.accept_uni().await.map_err(transport)?;
+                if let Some(object) = receive::serial(stream, budget, false).await? {
+                    return Ok(object);
+                }
+                // A reset stream does not renew the outer idle deadline.
+                // 被取消对象不能刷新外层空闲截止时间。
+            }
+        })
+        .await
+        .map_err(|_| Error::Timeout)?
+    }
 }
 
 fn validate_local(
@@ -456,6 +499,7 @@ async fn initiate(
             publisher: publishing,
             retained: receive::Retained::default(),
             send_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
+            send_bytes: std::sync::Arc::new(tokio::sync::Semaphore::new(8 * 1024 * 1024)),
             feedback,
         })
     })
@@ -544,6 +588,7 @@ async fn respond(
             publisher: !requested_publish,
             retained: receive::Retained::default(),
             send_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
+            send_bytes: std::sync::Arc::new(tokio::sync::Semaphore::new(8 * 1024 * 1024)),
             feedback,
         })
     })
