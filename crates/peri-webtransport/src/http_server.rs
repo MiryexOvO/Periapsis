@@ -9,6 +9,7 @@ use tokio::{
 };
 const PAGE: &str = include_str!("../web/watch.html");
 const PLAYER: &[u8] = include_bytes!("../web/player.js");
+const HTTP_PLAYER: &[u8] = include_bytes!("../web/http-webm.js");
 const HLS: &[u8] = include_bytes!("../../../scripts/vendor/hls.js/hls.light.min.js");
 
 async fn reply(sock: &mut TcpStream, status: &str, mime: &str, data: &[u8]) -> Result<(), Error> {
@@ -50,6 +51,8 @@ async fn serve_one(
     mobile: Mobile,
     page: &str,
 ) -> Result<(), Error> {
+    // Black/static scenes can produce tiny encoded packets. Send them promptly.
+    sock.set_nodelay(true)?;
     let mut read = BufReader::new((&mut sock).take(16384));
     let mut line = String::new();
     timeout(LIMIT, async {
@@ -92,6 +95,7 @@ async fn serve_one(
         "/peri-webtransport.js" => {
             reply(&mut sock, "200 OK", "application/javascript", PLAYER).await
         }
+        "/peri-http-webm.js" => reply(&mut sock, "200 OK", "application/javascript", HTTP_PLAYER).await,
         "/hls.light.min.js" => reply(&mut sock, "200 OK", "application/javascript", HLS).await,
         "/live.webm" => {
             let Ok((catalog, mut rx, mut frame)) = hub::join(hub).await else {
@@ -103,7 +107,7 @@ async fn serve_one(
                 )
                 .await;
             };
-            sock.write_all(b"HTTP/1.0 200 OK\r\nContent-Type: video/webm\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").await?;
+            sock.write_all(b"HTTP/1.0 200 OK\r\nContent-Type: video/webm\r\nCache-Control: no-store, no-transform\r\nX-Accel-Buffering: no\r\nConnection: close\r\n\r\n").await?;
             sock.write_all(&webm::header(&catalog)).await?;
             let origin = frame.timestamp_us;
             loop {

@@ -22,6 +22,9 @@ for(const file of ['target/release/peri.exe','target/release/peri-webtransport.e
 fs.writeFileSync(path.join(directory,'manifest.json'),JSON.stringify(manifest,null,2));
 const selected=(process.env.PERI_BROWSER_CASES??'clean,uplink,downlink,slow-viewer').split(',');
 const qualities=(process.env.PERI_BROWSER_QUALITIES??'source,720').split(',');
+const forceHttp=process.env.PERI_BROWSER_FORCE_HTTP==='1';
+if(forceHttp && (selected.some(x=>x!=='clean') || qualities.some(x=>x!=='source')))
+  throw Error('HTTP diagnostic supports only clean source; UDP shaping would not measure HTTP');
 const declaredProductTier=process.env.PERI_BROWSER_PRODUCT_TIER;
 if(declaredProductTier)productTierFor('clean',declaredProductTier);
 const productPlan=Object.fromEntries(selected.map(name=>[name,productTierFor(name,declaredProductTier)]));
@@ -120,13 +123,38 @@ async function trial(name,quality){
         window.WebTransport=class extends Native{constructor(url,options){const u=new URL(url);u.port=String(port);super(u.href,options)}};
       },{port:proxy.port});
       await page.addInitScript({path:path.join(root,'scripts/browser-network-probe.js')});
+      if(forceHttp){
+        await page.addInitScript(()=>{
+          window.WebTransport=undefined;
+          window.__httpDiagnostic=[];
+          addEventListener('DOMContentLoaded',()=>{
+            const v=document.querySelector('video'),record=event=>{
+              if(window.__httpDiagnostic.length<3000)window.__httpDiagnostic.push({at:Date.now(),event,
+                time:v.currentTime,ready:v.readyState,paused:v.paused,delivery:v.dataset.httpDelivery,
+                buffered:Array.from({length:v.buffered.length},(_,i)=>[v.buffered.start(i),v.buffered.end(i)])});
+            };
+            for(const name of ['waiting','stalled','playing','error','emptied'])v.addEventListener(name,()=>record(name));
+            setInterval(()=>record('sample'),200);
+          });
+        });
+        const cdp=await context.newCDPSession(page);await cdp.send('Network.enable');
+        const mediaIds=new Set(),arrivals=[];
+        cdp.on('Network.responseReceived',e=>{if(e.response.url.includes('/live.webm'))mediaIds.add(e.requestId)});
+        cdp.on('Network.dataReceived',e=>{if(mediaIds.has(e.requestId)&&arrivals.length<20000)arrivals.push({at:Date.now(),bytes:e.dataLength})});
+        page.__httpArrivals=arrivals;
+      }
       const errors=[];page.on('console',m=>{if(m.type()==='debug'||m.type()==='error')errors.push({at:Date.now(),message:m.text()})});
       page.on('pageerror',e=>errors.push({at:Date.now(),error:e.message}));
       page.__errors=errors;
       await page.goto(origin);
       if(quality==='720')await page.locator('#quality').selectOption('720');
-      await page.waitForFunction(h=>{const c=document.querySelector('main>canvas');return !c.hidden&&c.height===h&&!!c.dataset.pts},quality==='720'?720:report.source.height,{timeout:30000});
-      await page.locator('#sound').click();
+      if(forceHttp){
+        await page.waitForFunction(()=>document.querySelector('video').currentTime>0,null,{timeout:30000});
+        await page.evaluate(()=>{document.querySelector('video').muted=false});
+      }else{
+        await page.waitForFunction(h=>{const c=document.querySelector('main>canvas');return !c.hidden&&c.height===h&&!!c.dataset.pts},quality==='720'?720:report.source.height,{timeout:30000});
+        await page.locator('#sound').click();
+      }
     }
     // Independent monitor avoids timing process sampling inside the UDP event loop.
     // 独立进程采样内存和 CPU，避免进程查询阻塞 UDP 事件循环。
@@ -147,6 +175,8 @@ async function trial(name,quality){
     await sleep(8000);const end=Date.now();
     report.windows={baselineStart:warmStart,damageStart:start,damageEnd,end};
     for(let i=0;i<pages.length;i++){
+      if(forceHttp)fs.writeFileSync(path.join(dir,'http-'+i+'.json'),JSON.stringify({
+        samples:await pages[i].evaluate(()=>window.__httpDiagnostic),arrivals:pages[i].__httpArrivals}));
       const data=await pages[i].evaluate(()=>{clearInterval(window.__periProbe.timer);const{frames,ticks,events,pixelDebug,decoder}=window.__periProbe;return {frames,ticks,events,pixelDebug,decoder}});
       await pages[i].screenshot({path:path.join(dir,'viewer-'+i+'.png')});
       const recoveryTicks=data.ticks.filter(t=>t.at>=damageEnd);

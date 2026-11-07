@@ -6,10 +6,10 @@ background:#000;object-fit:contain}p{margin:12px 16px}</style>
 <style>[hidden]{display:none!important}canvas{display:block;width:100%;max-height:100dvh;object-fit:contain;background:#000}</style><main><canvas hidden></canvas><button id="sound" hidden>开启声音</button><video controls playsinline muted autoplay></video>
 <p><label>画质 <select id="quality"><option value="source">原画</option><option value="720">720p60 · 流畅</option></select></label></p>
 <p role="status">正在连接直播…</p></main>
-<script src="/hls.light.min.js"></script><script src="/peri-webtransport.js"></script><script>
+<script src="/hls.light.min.js"></script><script src="/peri-webtransport.js"></script><script src="/peri-http-webm.js"></script><script>
 const v=document.querySelector('video'),statusLine=document.querySelector('[role=status]');
-let retry;
-v.onplaying=()=>{clearTimeout(retry);statusLine.textContent=(v.dataset.transport==='webtransport'?'直播中 · WebTransport':'直播中')+(v.muted?' · 可开启声音':'')};
+let retry,health;
+v.onplaying=()=>{clearTimeout(retry);statusLine.textContent='直播中 · '+(v.dataset.transport==='http-webm'?'HTTP / WebM':v.dataset.transport==='hls'?'HLS':'WebTransport')+(v.muted?' · 可开启声音':'')};
 v.onvolumechange=()=>{if(!v.paused) v.onplaying()};
 const wtConfig=__PERI_WT_CONFIG__;
 const quality=document.querySelector('#quality');
@@ -48,14 +48,16 @@ quality.options[0].disabled=!canSource;
 quality.options[1].disabled=!nativeHls && !mseHls;
 quality.value=(appleMobile || !canSource) && !quality.options[1].disabled?'720':'source';
 
-let hls, wtStop, startup, generation=0;
+let hls, wtStop, httpStop, startup, generation=0;
 function tune(useWT=true){
   const session=++generation;
   recoverUntil=0;
   clearTimeout(retry);
   clearTimeout(startup);
+  clearInterval(health);
   v.onerror=v.onended=null;
   if(wtStop){wtStop();wtStop=null;}
+  if(httpStop){httpStop();httpStop=null;}
   if(hls){hls.destroy();hls=null;}
   v.removeAttribute('src');
   v.load();
@@ -100,8 +102,25 @@ function tune(useWT=true){
     hls.loadSource('/mobile/live.m3u8');
     hls.attachMedia(v);
   }else{
-    v.src=low?'/mobile/live.m3u8':'/live.webm';
+    const url=low?'/mobile/live.m3u8':'/live.webm?session='+encodeURIComponent(Date.now()+'-'+Math.random().toString(36).slice(2));
+    if(!low && window.periHttpWebm)httpStop=periHttpWebm(v,url,reconnect);
+    if(!httpStop){v.dataset.httpDelivery='native';v.src=url;}
     play();
+  }
+  if(!low){
+    let lastTime=v.currentTime,lastProgress=performance.now(),started=false;
+    health=setInterval(()=>{
+      if(session!==generation)return;
+      const now=performance.now(),time=v.currentTime;
+      // A user pause is not a stalled connection. Black pixels are never inspected.
+      if(v.paused || v.seeking || document.hidden){lastTime=time;lastProgress=now;return;}
+      if(time>lastTime+0.01){started=true;lastTime=time;lastProgress=now;return;}
+      if(now-lastProgress<(started?4000:15000))return;
+      clearInterval(health);
+      // Start a fresh live subscription; never replay the old HTTP response.
+      statusLine.textContent='播放停滞，正在重新连接直播…';
+      tune(false);
+    },1000);
   }
   startup=setTimeout(()=>{if(v.readyState<2 && !v.error)
     statusLine.textContent='仍未收到画面，请检查直播或切换画质。'},15000);

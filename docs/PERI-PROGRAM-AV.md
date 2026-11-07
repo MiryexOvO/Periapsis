@@ -54,4 +54,6 @@ Chrome / Edge 的原画使用 AV1 + Opus，720p60 使用 H.264 + AAC，两档都
 
 ## systemd
 
+HTTP 原画兼容播放在支持 AV1/Opus MediaSource 的浏览器上通过流式 fetch 及时追加 WebM 数据，减少纯色过场编码量变化造成的渐进下载缓冲停顿；其他浏览器保留原生 WebM 路径。此方式不要求 HTTPS，但不等同于 WebTransport。播放器保留停滞重连兜底，服务器流响应请求代理关闭缓冲；实际代理是否遵守取决于部署配置。
+
 安装两个发布二进制到 `/opt/peri/bin`。观看服务单元位于 `deploy/linux/peri-viewer.service`。用 `peri-webtransport viewer-config` 生成仅含公开连接参数的 JSON，保存为 `/etc/peri/viewer.json`。确保其中的 cert 指向服务用户可读的公开证书。将订阅凭据 `PERI_SUBSCRIBE_TOKEN` 单独放入 root 可读的 `/etc/peri/viewer.env`。按需在同一环境文件中配置上述 WebTransport 变量；为 DynamicUser 提供 TLS 私钥时宜通过 systemd LoadCredential 传入并设置相应读取路径。
