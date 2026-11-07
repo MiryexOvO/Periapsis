@@ -72,10 +72,8 @@ pub async fn read_control<R: AsyncRead + Unpin, T: DeserializeOwned>(
 }
 
 pub fn encode_object(object: &Object) -> Result<Vec<u8>, Error> {
-    if object.payload.is_empty() || object.payload.len() > MAX_PAYLOAD {
-        return Err(Error::Protocol("object length"));
-    }
-    let mut bytes = Vec::with_capacity(OBJECT_HEADER + object.payload.len());
+    let size = encoded_object_len(object)?;
+    let mut bytes = Vec::with_capacity(size);
     bytes.extend_from_slice(&object.sequence.to_be_bytes());
     bytes.extend_from_slice(&object.timestamp_us.to_be_bytes());
     bytes.extend_from_slice(&object.duration_us.to_be_bytes());
@@ -83,6 +81,13 @@ pub fn encode_object(object: &Object) -> Result<Vec<u8>, Error> {
     bytes.extend_from_slice(&(object.payload.len() as u32).to_be_bytes());
     bytes.extend_from_slice(&object.payload);
     Ok(bytes)
+}
+
+pub(crate) fn encoded_object_len(object: &Object) -> Result<usize, Error> {
+    if object.payload.is_empty() || object.payload.len() > MAX_PAYLOAD {
+        return Err(Error::Protocol("object length"));
+    }
+    Ok(OBJECT_HEADER + object.payload.len())
 }
 
 #[cfg(test)]

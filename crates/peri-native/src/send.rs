@@ -54,6 +54,7 @@ impl Drop for PendingSend {
 pub struct ObjectSend {
     pending: PendingSend,
     _slot: tokio::sync::OwnedSemaphorePermit,
+    _bytes: tokio::sync::OwnedSemaphorePermit,
     deadline: Deadline,
 }
 impl ObjectSend {
@@ -89,11 +90,17 @@ impl ObjectSend {
 pub(crate) async fn start(
     connection: &quinn::Connection,
     slots: Arc<tokio::sync::Semaphore>,
+    byte_slots: Arc<tokio::sync::Semaphore>,
     object: &Object,
     deadline: Deadline,
 ) -> Result<ObjectSend, Error> {
     let slot = deadline
         .run(slots.acquire_owned())
+        .await?
+        .map_err(transport)?;
+    let size = wire::encoded_object_len(object)?;
+    let byte_credit = deadline
+        .run(byte_slots.acquire_many_owned(size as u32))
         .await?
         .map_err(transport)?;
     let bytes = wire::encode_object(object)?;
@@ -145,6 +152,7 @@ pub(crate) async fn start(
     Ok(ObjectSend {
         pending,
         _slot: slot,
+        _bytes: byte_credit,
         deadline,
     })
 }

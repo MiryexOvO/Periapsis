@@ -10,6 +10,40 @@ use support::pair;
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 const BUDGET: Duration = Duration::from_secs(3);
 
+#[tokio::test]
+async fn send_window_retains_byte_credit_until_receipts_are_released() -> Result<(), TestError> {
+    let pair = pair(ALPN).await?;
+    let (mut publisher, _subscriber) = tokio::try_join!(
+        peri_native::accept(pair.incoming.clone(), hello(), "live/window", BUDGET),
+        peri_native::subscribe(pair.outgoing.clone(), hello(), "live/window", BUDGET)
+    )?;
+    assert!(publisher.set_send_limits(33, 2 * 1024 * 1024).is_err());
+    publisher.set_send_limits(32, 2 * 1024 * 1024)?;
+    let object = |sequence| Object {
+        sequence,
+        timestamp_us: 0,
+        duration_us: 16667,
+        independent: true,
+        payload: vec![42; 400000],
+    };
+    let mut held = Vec::new();
+    for sequence in 1..=5 {
+        held.push(publisher.start_send(&object(sequence), BUDGET).await?);
+    }
+    assert!(publisher.set_send_limits(32, 2 * 1024 * 1024).is_err());
+    assert!(matches!(
+        publisher
+            .start_send(&object(6), Duration::from_millis(30))
+            .await,
+        Err(Error::Timeout)
+    ));
+    drop(held.pop());
+    held.push(publisher.start_send(&object(7), BUDGET).await?);
+    drop(held);
+    publisher.set_send_limits(8, 8 * 1024 * 1024)?;
+    Ok(())
+}
+
 /// 真实QUIC逐次省略每一片，验证协商后的分片精确保真与150ms本地重组预算。
 /// 这是应用层片丢失夹具，不是随机UDP丢包或正式Relay播放性能实验。
 #[tokio::test]
@@ -661,6 +695,11 @@ async fn push_publish_relay_fans_out_and_late_join_waits_for_key() -> Result<(),
         payload: vec![sequence as u8; 100],
     };
     let key = frame(1, FrameKind::Key, vec![]);
+    // An abandoned publisher object must not terminate relay ingestion.
+    // 发布端局部取消对象后，Relay 必须继续接收新的完整关键帧。
+    let mut abandoned = incoming.outgoing.open_uni().await?;
+    abandoned.write_all(&[0]).await?;
+    abandoned.reset(1u32.into())?;
     source.send(&key, BUDGET).await?;
     assert_eq!(first_viewer.recv(BUDGET).await?, key);
     let second = pair(ALPN).await?;

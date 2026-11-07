@@ -16,3 +16,6 @@ serde_json.workspace = true
 base64 = "0.22"
 tokio = { version = "1.48", features = ["rt-multi-thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[dev-dependencies]
+rcgen = "=0.13.2"

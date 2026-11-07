@@ -485,6 +485,15 @@ impl Subscriber {
         }
         Frame::from_object(self.session.recv_shared(budget).await?, &self.catalog)
     }
+    pub(crate) async fn recv_ingest_shared(&self, budget: Duration) -> Result<Frame, Error> {
+        if self.repair.is_some() {
+            return self.recv_shared(budget).await;
+        }
+        Frame::from_object(
+            self.session.recv_ingest_shared(budget).await?,
+            &self.catalog,
+        )
+    }
     /// Receive live media, reporting local expiry or RESET(1) as a recovery gap.
     /// 实时收取媒体；局部超时或RESET(1)返回缺口，由调用方决定是否恢复参考链。
     pub async fn recv_live(

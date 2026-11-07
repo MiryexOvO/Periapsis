@@ -143,7 +143,7 @@ impl Relay {
         let _guard = IngestGuard(self);
         loop {
             // 读取future只创建一次；反馈到达不重启空闲预算，也不取消半个对象。
-            let receive = source.recv_shared(idle_budget);
+            let receive = source.recv_ingest_shared(idle_budget);
             tokio::pin!(receive);
             let frame = loop {
                 let requests = std::mem::take(&mut *self.requests.lock().expect("requests"));
@@ -166,8 +166,43 @@ impl Relay {
                     _ = self.changed.notified() => {},
                 }
             };
-            self.push(frame, Instant::now())?;
+            self.push_ingest(frame, Instant::now())?;
         }
+    }
+
+    fn push_ingest(&self, frame: Frame, now: Instant) -> Result<(), Error> {
+        frame.validate(&self.catalog)?;
+        if frame.payload.len() > self.limits.frame_bytes {
+            return Err(Error::Protocol("relay frame limit"));
+        }
+        let mut state = self.state.lock().expect("relay lock");
+        if state.closed || frame.sequence <= state.sequence {
+            return Err(Error::Protocol("relay sequence or state"));
+        }
+        if frame
+            .dependencies
+            .iter()
+            .any(|id| !state.references.contains(&(*id, frame.track)))
+        {
+            // Descendants may already be in flight when a publisher cancels a reference.
+            // 发布端取消参考帧时，其后继可能已经在途；丢弃依赖缺口而不关闭资源。
+            state.sequence = frame.sequence;
+            drop(state);
+            crate::trace(
+                "relay_ingest_gap",
+                serde_json::json!({"track":frame.track,"sequence":frame.sequence}),
+            );
+            self.request_recovery(frame.track, 0, frame.sequence);
+            return Ok(());
+        }
+        drop(state);
+        if frame.kind == FrameKind::Key {
+            crate::trace(
+                "relay_key_received",
+                serde_json::json!({"sequence":frame.sequence,"pts_us":frame.timestamp_us,"bytes":frame.payload.len()}),
+            );
+        }
+        self.push(frame, now)
     }
 
     fn push(&self, frame: Frame, now: Instant) -> Result<(), Error> {
@@ -578,6 +613,29 @@ mod tests {
         relay.push(key(2), Instant::now()).unwrap();
         relay.close();
         assert!(relay.push(key(3), Instant::now()).is_err());
+    }
+
+    #[test]
+    fn ingest_discards_cancelled_reference_descendants_until_a_new_key() {
+        let relay = Relay::new(catalog(), Limits::default()).unwrap();
+        relay.push_ingest(key(1), Instant::now()).unwrap();
+        for sequence in [3, 4] {
+            let mut frame = key(sequence);
+            frame.kind = FrameKind::Reference;
+            frame.dependencies = vec![sequence - 1];
+            relay.push_ingest(frame, Instant::now()).unwrap();
+        }
+        assert!(!relay.state.lock().unwrap().closed);
+        assert_eq!(relay.state.lock().unwrap().references.len(), 1);
+        assert_eq!(relay.requests.lock().unwrap().len(), 1);
+        assert!(relay.push_ingest(key(4), Instant::now()).is_err());
+        relay.push_ingest(key(5), Instant::now()).unwrap();
+        let mut next = key(6);
+        next.kind = FrameKind::Reference;
+        next.dependencies = vec![5];
+        relay.push_ingest(next, Instant::now()).unwrap();
+        assert_eq!(relay.state.lock().unwrap().sequence, 6);
+        assert_eq!(relay.state.lock().unwrap().references.len(), 3);
     }
     // 字节额度必须跨越出队阶段；释放对象才归还，慢观看者独立断开。
     // Credit survives dequeue; dropping the item returns it, and a slow viewer is isolated.

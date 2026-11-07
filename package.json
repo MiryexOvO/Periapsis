@@ -4,12 +4,14 @@
   "type": "module",
   "devDependencies": {
     "@types/node": "24.10.0",
+    "playwright-core": "1.62.1",
     "typescript": "5.9.3"
   },
   "scripts": {
+    "native:browser:check": "node scripts/browser-network-check.mjs",
     "native:freeze:check": "node --experimental-strip-types scripts/native-freeze-check.ts",
     "check": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs",
     "native:live:check": "node --experimental-strip-types scripts/native-live-check.ts",
     "native:gop:check": "node --experimental-strip-types scripts/native-gop-check.ts",
     "native:check": "node --experimental-strip-types scripts/native-service-check.ts",
