@@ -96,6 +96,17 @@ async function trial(name,quality){
     fs.writeFileSync(env.PERI_CONFIG,JSON.stringify({udp:relayPort,tcp:httpPort,cert,name:'localhost',resource}));
     const gateway=run('gateway',gatewayBin,['watch']);await wait(gateway,/PERI_WT_READY/);
     env.PERI_OBS_TEST_TICKET='peri://v1/'+Buffer.from(JSON.stringify({address:'127.0.0.1:'+publisherProxy.port,name:'localhost',resource,token,cert:fs.readFileSync(cert).toString('base64')})).toString('base64url');
+    if(env.PERI_OBS_TEST_CONNECTION==='separate') {
+      const signingConfig=path.join(dir,'publisher-config.json');
+      fs.writeFileSync(signingConfig,JSON.stringify({public:'127.0.0.1',udp:relayPort,external:publisherProxy.port,
+        tcp:httpPort,web_external:httpPort,cert,key:path.join(dir,'tls/key.key'),name:'localhost',resource,
+        tokens:{PERI_PUBLISH_TOKEN:token,PERI_SUBSCRIBE_TOKEN:env.PERI_SUBSCRIBE_TOKEN}}));
+      const details=execFileSync(gatewayBin,['link'],{env:{...env,PERI_CONFIG:signingConfig},encoding:'utf8'});
+      env.PERI_OBS_TEST_TICKET=details.split('Stream key: ')[1]?.trim();
+      if(!env.PERI_OBS_TEST_TICKET?.startsWith('peri1_'))throw Error('Missing generated publish code');
+      env.PERI_OBS_TEST_SERVER='peri://127.0.0.1:'+publisherProxy.port;
+      report.connectionMode='separate-address-and-code';
+    } else report.connectionMode='legacy-invitation';
     const obsDir='D:/OBS/obs-studio/bin/64bit';env.PATH=obsDir+';'+process.env.PATH;
     const source=run('source',path.join(root,'target/obs-sdk/obs-recovery-source.exe'),[],obsDir);await wait(relay,/PERI_RESOURCE_READY/);
     browser=await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true,args:['--autoplay-policy=no-user-gesture-required','--disable-background-timer-throttling','--disable-renderer-backgrounding']});

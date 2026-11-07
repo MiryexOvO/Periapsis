@@ -23,6 +23,7 @@
 pub mod adaptation;
 pub mod auth;
 pub mod av1;
+pub mod connection;
 mod deadline;
 mod send;
 pub use send::ObjectSend;
@@ -563,8 +564,11 @@ async fn respond(
         if publishing.is_some_and(|expected| expected != requested_publish) {
             return Err(Error::Protocol("unexpected connection role"));
         }
-        if let Some(credentials) = credentials {
-            credentials.authorize(requested_publish, authorization.as_deref())?;
+        if let Some(credentials) = credentials
+            && let Err(error) = credentials.authorize(requested_publish, authorization.as_deref())
+        {
+            guard.0.close(3u32.into(), b"PERI_AUTH_DENIED");
+            return Err(error);
         }
         if requested != resource {
             return Err(Error::Protocol("resource denied"));

@@ -56,13 +56,45 @@ struct Live {
 
 impl Live {
     fn open(text: &str) -> Result<Self, Error> {
-        let encoded = text
-            .strip_prefix("peri://v1/")
-            .ok_or("需要完整的发布 Token / Invalid invitation")?;
-        if encoded.len() > 32768 {
-            return Err("Token too large".into());
-        }
-        let invitation: Invitation = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded)?)?;
+        Self::open_at("", text)
+    }
+    fn open_at(server: &str, text: &str) -> Result<Self, Error> {
+        let text = text.trim();
+        let (invitation, tls) = if text.starts_with("peri1_") {
+            let code = peri_native::connection::PublishCode::decode(text)?;
+            let tls = code.client_config()?;
+            (
+                Invitation {
+                    address: peri_native::connection::parse_server(server)?,
+                    name: code.name,
+                    resource: code.resource,
+                    token: code.token,
+                    cert: String::new(),
+                },
+                tls,
+            )
+        } else {
+            let encoded = text
+                .strip_prefix("peri://v1/")
+                .ok_or("需要完整的发布 Token / Invalid invitation")?;
+            if encoded.len() > 32768 {
+                return Err("Token too large".into());
+            }
+            let mut invitation: Invitation =
+                serde_json::from_slice(&URL_SAFE_NO_PAD.decode(encoded)?)?;
+            if !server.trim().is_empty() && server.trim() != "peri://invitation" {
+                invitation.address = peri_native::connection::parse_server(server)?;
+            }
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(rustls::pki_types::CertificateDer::from(
+                STANDARD.decode(&invitation.cert)?,
+            ))?;
+            let mut tls = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            tls.alpn_protocols = vec![peri_native::ALPN.to_vec()];
+            (invitation, tls)
+        };
         if invitation.address.ip().is_unspecified() || invitation.address.port() == 0 {
             return Err("Token 中必须填写可访问的 Relay 地址 / Invalid relay address".into());
         }
@@ -71,14 +103,6 @@ impl Live {
             .enable_all()
             .build()?;
         let (endpoint, session) = runtime.block_on(async {
-            let mut roots = rustls::RootCertStore::empty();
-            roots.add(rustls::pki_types::CertificateDer::from(
-                STANDARD.decode(invitation.cert)?,
-            ))?;
-            let mut tls = rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
-            tls.alpn_protocols = vec![peri_native::ALPN.to_vec()];
             let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)?;
             let mut config = quinn::ClientConfig::new(Arc::new(crypto));
             let mut transport = quinn::TransportConfig::default();
@@ -107,7 +131,8 @@ impl Live {
             // Network waits run on Tokio; start/stop on the OBS UI can cancel via endpoint.
             // 网络握手在 Tokio 中进行；OBS 启停可通过 endpoint 取消。
             let session = tokio::spawn(async move {
-                let connection = tokio::time::timeout(BUDGET, connecting).await??;
+                let connection = tokio::time::timeout(BUDGET, connecting).await
+                    .map_err(|_| format!("服务器未响应：{}；请检查公网 UDP 端口和 NAT 映射 / Server did not respond", invitation.address))??;
                 let hello = Hello {
                     version: PERI_VERSION,
                     profiles: vec![Profile::Live],
@@ -121,7 +146,11 @@ impl Live {
                     &invitation.token,
                     BUDGET,
                 )
-                .await?;
+                .await.map_err(|error| -> Error {
+                    if error.to_string().contains("PERI_AUTH_DENIED") {
+                        "推流码被拒绝，请从服务器重新取得推流码 / Publish code rejected".into()
+                    } else { Box::new(error) }
+                })?;
                 if std::env::var_os("PERI_OBS_UPLINK_EXPERIMENT").is_some() {
                     session.set_send_limits(32, 2 * 1024 * 1024)?;
                 }
@@ -362,7 +391,34 @@ unsafe extern "C" fn peri_live_open(
     error: *mut c_char,
     cap: usize,
 ) -> *mut Live {
-    match Live::open(unsafe { CStr::from_ptr(key) }.to_str().unwrap_or("")) {
+    open_result(
+        Live::open(unsafe { CStr::from_ptr(key) }.to_str().unwrap_or("")),
+        cancel,
+        error,
+        cap,
+    )
+}
+#[unsafe(no_mangle)]
+unsafe extern "C" fn peri_live_open_at(
+    server: *const c_char,
+    key: *const c_char,
+    cancel: *mut *mut quinn::Endpoint,
+    error: *mut c_char,
+    cap: usize,
+) -> *mut Live {
+    let result = Live::open_at(
+        unsafe { CStr::from_ptr(server) }.to_str().unwrap_or(""),
+        unsafe { CStr::from_ptr(key) }.to_str().unwrap_or(""),
+    );
+    open_result(result, cancel, error, cap)
+}
+fn open_result(
+    result: Result<Live, Error>,
+    cancel: *mut *mut quinn::Endpoint,
+    error: *mut c_char,
+    cap: usize,
+) -> *mut Live {
+    match result {
         Ok(state) => {
             unsafe {
                 *cancel = Box::into_raw(Box::new(state._endpoint.clone()));
@@ -462,7 +518,7 @@ fn register_catalog(stock: &Path, user: &Path) -> Result<(), Error> {
     {
         return Ok(());
     }
-    services.push(serde_json::json!({"name":"PERI","common":true,"protocol":"PERI","servers":[{"name":"Token 内的服务器 / From token","url":"peri://invitation"}],"supported video codecs":["av1"],"supported audio codecs":["opus"]}));
+    services.push(serde_json::json!({"name":"PERI","common":true,"protocol":"PERI","servers":[{"name":"旧版 Token 地址 / Legacy token address","url":"peri://invitation"}],"supported video codecs":["av1"],"supported audio codecs":["opus"]}));
     std::fs::create_dir_all(user.parent().ok_or("missing catalog directory")?)?;
     let tmp = user.with_extension(format!("peri-{}.tmp", std::process::id()));
     std::fs::write(&tmp, serde_json::to_vec(&root)?)?;

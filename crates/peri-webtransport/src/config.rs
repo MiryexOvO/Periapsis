@@ -79,7 +79,9 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self, Error> {
         let mut c: Self = serde_json::from_slice(&private_config(path)?)?;
         if c.stream_key.is_empty()
-            && c.tokens.get("PERI_PUBLISH_TOKEN").is_none_or(|v| v.is_empty())
+            && c.tokens
+                .get("PERI_PUBLISH_TOKEN")
+                .is_none_or(|v| v.is_empty())
         {
             return Err("missing publishing credential: expected stream_key or legacy tokens.PERI_PUBLISH_TOKEN".into());
         }
@@ -93,7 +95,11 @@ impl Config {
     pub fn publish_key(&self) -> String {
         // Preserve legacy credentials rather than silently rotating them during upgrade.
         if self.stream_key.is_empty() {
-            return self.tokens.get("PERI_PUBLISH_TOKEN").cloned().unwrap_or_default();
+            return self
+                .tokens
+                .get("PERI_PUBLISH_TOKEN")
+                .cloned()
+                .unwrap_or_default();
         }
         format!(
             "{:x}",
@@ -114,6 +120,19 @@ impl Config {
         Ok(format!(
             "peri://v1/{}",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&data)?)
+        ))
+    }
+    pub fn connection_details(&self) -> Result<String, Error> {
+        let address = public_endpoint(&[], self.public, self.external)?;
+        let code = peri_native::connection::PublishCode::new(
+            &std::fs::read(&self.cert)?,
+            self.publish_key(),
+            self.name.clone(),
+            self.resource.clone(),
+        )?
+        .encode()?;
+        Ok(format!(
+            "服务器 / Server: peri://{address}\n推流码 / Stream key: {code}"
         ))
     }
     pub fn save(&self, path: &Path, new: bool) -> Result<(), Error> {
@@ -171,8 +190,14 @@ mod upgrade_tests {
         let original = serde_json::to_vec(&value).unwrap();
         file.write_all(&original).unwrap();
         let cfg = Config::load(file.path()).unwrap();
-        assert_eq!(cfg.publish_key(), value["tokens"]["PERI_PUBLISH_TOKEN"].as_str().unwrap());
-        assert_eq!(cfg.subscribe, value["tokens"]["PERI_SUBSCRIBE_TOKEN"].as_str().unwrap());
+        assert_eq!(
+            cfg.publish_key(),
+            value["tokens"]["PERI_PUBLISH_TOKEN"].as_str().unwrap()
+        );
+        assert_eq!(
+            cfg.subscribe,
+            value["tokens"]["PERI_SUBSCRIBE_TOKEN"].as_str().unwrap()
+        );
         assert_eq!(std::fs::read(file.path()).unwrap(), original);
         assert_eq!(cfg.cert, PathBuf::from("cert.der"));
     }
@@ -182,14 +207,75 @@ mod upgrade_tests {
         let mut value = legacy();
         value["stream_key"] = "new-stream-key".into();
         let cfg = load(&value).unwrap();
-        assert_eq!(cfg.publish_key(), format!("{:x}", Sha256::digest(b"peri-stream-key-v1\0new-stream-key")));
+        assert_eq!(
+            cfg.publish_key(),
+            format!(
+                "{:x}",
+                Sha256::digest(b"peri-stream-key-v1\0new-stream-key")
+            )
+        );
     }
 
     #[test]
     fn missing_publish_credential_fails_without_default_secret() {
         let mut value = legacy();
-        value["tokens"].as_object_mut().unwrap().remove("PERI_PUBLISH_TOKEN");
-        assert!(load(&value).err().unwrap().to_string().contains("missing publishing credential"));
+        value["tokens"]
+            .as_object_mut()
+            .unwrap()
+            .remove("PERI_PUBLISH_TOKEN");
+        assert!(
+            load(&value)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("missing publishing credential")
+        );
+    }
+
+    #[test]
+    fn nat_ticket_uses_external_port_without_changing_listener_or_credential() {
+        let mut cfg = load(&legacy()).unwrap();
+        let key = cfg.publish_key();
+        let cert = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(cert.path(), b"test-certificate").unwrap();
+        cfg.cert = cert.path().into();
+        let args = ["--public-port", "23927", "--public-ip", "43.248.128.243"].map(String::from);
+        let address = public_endpoint(&args, cfg.public, cfg.external).unwrap();
+        cfg.external = address.port();
+        let ticket = cfg.ticket(address.ip()).unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(ticket.strip_prefix("peri://v1/").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded["address"], "43.248.128.243:23927");
+        assert_eq!(decoded["token"], key);
+        assert_eq!(decoded["cert"], STANDARD.encode(b"test-certificate"));
+        assert_eq!(cfg.udp, 4444);
+    }
+
+    #[test]
+    fn public_endpoint_rejects_incomplete_duplicate_and_invalid_arguments() {
+        let ip = "127.0.0.1".parse().unwrap();
+        assert_eq!(public_endpoint(&[], ip, 23927).unwrap().port(), 23927);
+        for args in [
+            vec!["--public-port"],
+            vec!["--public-port", "0"],
+            vec!["--public-port", "65536"],
+            vec!["--public-ip", "0.0.0.0"],
+            vec!["--public-port", "1", "--public-port", "2"],
+            vec!["--unknown", "1"],
+        ] {
+            assert!(
+                public_endpoint(
+                    &args.into_iter().map(String::from).collect::<Vec<_>>(),
+                    ip,
+                    4444
+                )
+                .is_err()
+            );
+        }
     }
 }
 fn port(label: &str, default: u16) -> Result<u16, Error> {
@@ -202,22 +288,52 @@ fn port(label: &str, default: u16) -> Result<u16, Error> {
 fn sibling() -> Result<PathBuf, Error> {
     Ok(std::env::current_exe()?.with_file_name(format!("peri{}", std::env::consts::EXE_SUFFIX)))
 }
+fn public_endpoint(args: &[String], ip: IpAddr, port: u16) -> Result<std::net::SocketAddr, Error> {
+    let mut address = std::net::SocketAddr::new(ip, port);
+    let (mut seen_ip, mut seen_port) = (false, false);
+    let usage = "obs-token [--public-ip IP] [--public-port PORT]";
+    let mut pairs = args.chunks_exact(2);
+    for pair in &mut pairs {
+        match pair[0].as_str() {
+            "--public-ip" if !seen_ip => {
+                address.set_ip(pair[1].parse()?);
+                seen_ip = true;
+            }
+            "--public-port" if !seen_port => {
+                address.set_port(pair[1].parse()?);
+                seen_port = true;
+            }
+            _ => return Err(usage.into()),
+        }
+    }
+    if !pairs.remainder().is_empty() {
+        return Err(usage.into());
+    }
+    if address.ip().is_unspecified() || address.port() == 0 {
+        return Err("specify a reachable public IP and nonzero external UDP port".into());
+    }
+    Ok(address)
+}
 pub fn manage(action: &str, args: &[String], path: &Path) -> Result<(), Error> {
     if action == "setup" {
         if path.exists() {
-            return Err("configuration already exists".into());
+            println!(
+                "已有配置已保留。修改公网地址请运行 configure。 / Existing configuration retained."
+            );
+            println!("{}", Config::load(path)?.connection_details()?);
+            return Ok(());
         }
         let dir = path.parent().ok_or("missing directory")?;
         std::fs::create_dir_all(dir)?;
-        let public = ask("主播可达 IP", "0.0.0.0")?.parse()?;
+        let public = ask("服务器 IP（主播可达）", "")?.parse()?;
         let udp = port("Relay UDP", 4444)?;
         let external = port("公网 UDP", udp)?;
+        public_endpoint(&[], public, external)?;
         let tcp = port("网页 TCP", 4455)?;
         let web_external = port("公网 TCP", tcp)?;
         let resource = ask("直播资源", "live/av1")?;
-        let stream_key = ask("推流码", "stream")?;
-        let cert_text = ask("已有 cert.der 路径或 new", "new")?;
-        let (cert, key, name) = if cert_text == "new" {
+        let stream_key = random_key()?;
+        let (cert, key, name) = {
             let tls = tempfile::Builder::new().prefix("tls-").tempdir_in(dir)?;
             if !std::process::Command::new(sibling()?)
                 .arg("init")
@@ -233,13 +349,6 @@ pub fn manage(action: &str, args: &[String], path: &Path) -> Result<(), Error> {
                 tls.join("key.key"),
                 "localhost".into(),
             )
-        } else {
-            let cert = std::fs::canonicalize(cert_text)?;
-            let key = std::fs::canonicalize(ask(
-                "Relay 私钥",
-                &cert.with_file_name("key.key").to_string_lossy(),
-            )?)?;
-            (cert, key, ask("证书名", "localhost")?)
         };
         let mut secret = [0u8; 32];
         getrandom::fill(&mut secret).map_err(|_| "secure random unavailable")?;
@@ -262,10 +371,19 @@ pub fn manage(action: &str, args: &[String], path: &Path) -> Result<(), Error> {
             subscribe: String::new(),
         }
         .save(path, true)?;
+        println!("{}", Config::load(path)?.connection_details()?);
         return Ok(());
     }
     let mut c = Config::load(path)?;
     match action {
+        "configure" => {
+            c.public = ask("主播连接的公网 IP", &c.public.to_string())?.parse()?;
+            c.external = port("主播连接的公网 UDP 端口（NAT 映射后的端口）", c.external)?;
+            public_endpoint(&[], c.public, c.external)?;
+            c.save(path, false)?;
+            println!("Relay 本机监听仍为 UDP {} / Listener unchanged", c.udp);
+            println!("{}", c.connection_details()?);
+        }
         "viewer-config" => println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -273,12 +391,9 @@ pub fn manage(action: &str, args: &[String], path: &Path) -> Result<(), Error> {
             }))?
         ),
         "obs-token" => {
-            let ip = match args {
-                [] => c.public,
-                [flag, ip] if flag == "--public-ip" => ip.parse()?,
-                _ => return Err("obs-token [--public-ip IP]".into()),
-            };
-            println!("{}", c.ticket(ip)?);
+            let address = public_endpoint(args, c.public, c.external)?;
+            c.external = address.port();
+            println!("{}", c.ticket(address.ip())?);
         }
         "relay" => {
             let mut cmd = std::process::Command::new(sibling()?);
@@ -304,23 +419,23 @@ pub fn manage(action: &str, args: &[String], path: &Path) -> Result<(), Error> {
             c.save(path, false)?;
         }
         "stream-key" => {
-            c.stream_key = ask("新推流码", "stream")?;
+            c.stream_key = random_key()?;
             c.save(path, false)?;
+            println!("推流码已轮换；请重启 Relay 并更新 OBS。 / Restart Relay and update OBS.");
+            println!("{}", c.connection_details()?);
         }
-        "link" if c.stream_key.is_empty() => println!(
-            "Legacy publishing credential retained; use obs-token to generate the OBS token."
-        ),
-        "link" => println!(
-            "服务器 peri://{}\n推流码 {}",
-            std::net::SocketAddr::new(c.public, c.external),
-            c.stream_key
-        ),
+        "link" => println!("{}", c.connection_details()?),
         _ => {
             return Err(
-                "expected setup | relay | watch | obs-token | watch-port | stream-key | link"
+                "expected setup | configure | relay | watch | obs-token | watch-port | stream-key | link"
                     .into(),
             );
         }
     }
     Ok(())
+}
+fn random_key() -> Result<String, Error> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|_| "secure random unavailable")?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
 }

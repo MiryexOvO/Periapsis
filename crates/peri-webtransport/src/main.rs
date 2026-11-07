@@ -103,7 +103,7 @@ async fn main() -> Result<(), Error> {
     let action = args.first().map(String::as_str).unwrap_or("watch");
     if action == "--help" {
         println!(
-            "peri-webtransport setup | relay | watch | obs-token [--public-ip IP] | watch-port | stream-key | link | viewer-config"
+            "peri-webtransport setup | configure | relay | watch | obs-token [--public-ip IP] [--public-port PORT] | watch-port | stream-key | link | viewer-config"
         );
         return Ok(());
     }

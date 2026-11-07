@@ -10,32 +10,39 @@ Active keyframe recovery is supported for OBS 32.1.2 NVENC AV1 CBR publishing. A
 
 在 PERI 仓库执行：
 
-~~~sh
+```sh
 cargo build --release --locked -p peri-native --bin peri -p peri-webtransport --bin peri-webtransport
-./target/release/peri-webtransport obs-token --public-ip 主播可达的IPv4
-~~~
+./target/release/peri-webtransport configure
+./target/release/peri-webtransport link
+```
 
-网关沿用 `~/.config/peri/server.json`（Linux 权限 0600），也可通过 `PERI_CONFIG` 指定文件。已有部署使用原证书、令牌和转发端口。将 Token 私下交给主播，在 OBS「设置 → 直播 → PERI → 推流码」粘贴。首次部署先运行 `peri-webtransport setup`。管理命令还包括 `watch-port`、`stream-key`、`link`。Relay 与网关二进制放在同一目录，分别从两个终端启动：
+网关沿用 `~/.config/peri/server.json`（Linux 权限 0600），也可通过 `PERI_CONFIG` 指定文件。已有部署保留原证书与凭据，缺少旧版本 `stream_key` 字段时使用已有发布凭据。`configure` 交互修改主播连接的 IP 和外部 UDP 端口；地址不变时可直接运行 `link`。
 
-~~~sh
+把 `link` 输出的两项私下交给主播：OBS「设置 → 直播」选择 PERI，服务器栏直接输入 `peri://IP:端口`，推流码栏粘贴 `peri1_` 开头的代码。插件自动校验服务器身份，主播不需要处理证书文件。IP/端口变更不改变推流码。首次部署运行 `setup`，证书和随机凭据自动生成。`stream-key` 会生成新的随机推流码，执行后需重启 Relay 并更新主播配置；`watch-port` 管理观看端口。旧 `obs-token` 命令与完整 Token 仍兼容。
+
+直连服务器与端口映射服务器的主播输入方式相同，均使用主播可达的 `peri://IP:端口`。`configure` 保留本机监听端口，外部端口可以与之不同。IPv6 使用 `peri://[IPv6地址]:端口`，当前不支持域名。观看网页和浏览器 WebTransport 的端口、证书另行配置。
+
+Relay 与网关二进制放在同一目录，分别从两个终端启动：
+
+```sh
 ./target/release/peri-webtransport relay
 ./target/release/peri-webtransport watch
-~~~
+```
 
 迁移时先停止原 watch 进程以释放 TCP 端口；运行中的 Relay 可以继续使用。观看页、WebCodecs 播放器和 hls.js 已嵌入 Rust 二进制。原画发布、订阅、分发和解码链路均可在没有 FFmpeg 的环境运行。需要提供 720p60 时，服务器另需带 AV1 解码、libx264 和 AAC 编码的本机 FFmpeg，可用 `PERI_FFMPEG` 指定路径。转码进程按需启动，两种观看路径共用同一次编码。
 
-## 启用 WebTransport
+### HTTPS 与浏览器连接
 
 在 HTTPS 反向代理后运行网关的 HTTP 观看端口。独立开放或转发一个公网 UDP 端口给 HTTP/3。示例中观看页为 https://live.example.com，网关 UDP 为 4450：
 
-~~~sh
+```sh
 export PERI_WT_BIND=0.0.0.0:4450
 export PERI_WT_URL=https://live.example.com:4450
 export PERI_WT_CERT=/path/to/fullchain.pem
 export PERI_WT_KEY=/path/to/privkey.pem
 export PERI_PAGE_ORIGIN=https://live.example.com
 ./target/release/peri-webtransport watch
-~~~
+```
 
 `PERI_PAGE_ORIGIN` 必须与页面 Origin 一致（非默认端口也要填写）。浏览器证书和 Relay 自签证书各有用途。受信任的浏览器证书用于公网；开发机可在 localhost 使用短期 ECDSA 证书，并通过 `PERI_WT_CERT_HASH` 提供 DER 的 SHA-256 标准 Base64。普通公网 HTTP 页面使用兼容路径。
 

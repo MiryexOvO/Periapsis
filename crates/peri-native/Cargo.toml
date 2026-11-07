@@ -14,6 +14,8 @@ peri-types.workspace = true
 peri-session = { path = "../peri-session" }
 serde.workspace = true
 serde_json.workspace = true
+base64 = "0.22"
+sha2 = "0.10"
 quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "io-util", "sync", "signal", "process"] }
 

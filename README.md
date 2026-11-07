@@ -47,11 +47,11 @@ PERI 原生协议使用实验 ALPN `peri-dev-02`。浏览器通过网关接入�
 使用配套的 `PERI-OBS-Windows-x64.zip`，安装步骤见相邻插件仓库的 [OBS 安装说明](../obs-periapsis/README.md)。若只取得本仓库，需要另行取得插件包或配套插件源码。
 
 1. 完全退出 OBS，解压插件包并运行 `Install-PERI.cmd`。升级时成套更新两个 DLL。
-2. 向服务器管理员取得发布 Token。
-3. 打开 OBS「设置 → 直播」，选择 **PERI**，将完整 Token 粘贴到「推流码」。
+2. 向服务器管理员取得服务器地址和推流码。
+3. 打开 OBS「设置 → 直播」，选择 **PERI**。服务器栏输入 `peri://IP:端口`，推流码栏粘贴 `peri1_` 开头的推流码，点击应用。
 4. 选择 AV1 编码及所需分辨率、帧率，点击「开始直播」。
 
-主播端只需要 OBS、可用编码器和插件包，无需安装 Rust、Node.js 或 FFmpeg。发布 Token 含发布凭据，应私下传递。
+主播端只需要 OBS、可用编码器和插件包，无需安装 Rust、Node.js、FFmpeg 或证书。服务器地址可自由修改；推流码不绑定 IP/端口，自动携带身份校验信息，应私下传递。IPv6 使用 `peri://[IPv6地址]:端口`，当前不支持域名输入。旧版完整 Token 仍可使用。
 
 ### 管理员：构建与启动服务
 
@@ -63,7 +63,7 @@ PERI 原生协议使用实验 ALPN `peri-dev-02`。浏览器通过网关接入�
 cargo build --release --locked -p peri-native --bin peri -p peri-webtransport --bin peri-webtransport
 ```
 
-以下以 Linux 为例。首次部署运行交互初始化，填写主播可达地址、端口和证书配置：
+以下以 Linux 为例。首次部署运行交互初始化，填写主播可达地址、监听和外部端口。程序自动生成证书和随机凭据，无需手动准备证书：
 
 ```sh
 ./target/release/peri-webtransport setup
@@ -81,13 +81,13 @@ cargo build --release --locked -p peri-native --bin peri -p peri-webtransport --
 ./target/release/peri-webtransport watch
 ```
 
-生成交给主播的 Token（将示例地址替换为主播可达的实际 IPv4）：
+显示交给主播的服务器地址和推流码：
 
 ```sh
-./target/release/peri-webtransport obs-token --public-ip 192.0.2.10
+./target/release/peri-webtransport link
 ```
 
-Windows 对应程序位于 `target\release\`，文件名带 `.exe`。默认配置位于用户目录下的 `.config/peri/server.json`，可用 `PERI_CONFIG` 指定配置文件。已有部署沿用配置，无需重复初始化。
+Windows 对应程序位于 `target\release\`，文件名带 `.exe`。默认配置位于用户目录下的 `.config/peri/server.json`，可用 `PERI_CONFIG` 指定配置文件。已有部署沿用配置；运行 `configure` 可交互修改主播连接的 IP 和端口，保留本机监听、证书与凭据。直连与端口映射统一使用 `peri://IP:端口`。
 
 **低延迟网页观看还需要配置 WebTransport。** 公网部署应使用 HTTPS 观看页、受信任的 TLS 证书和独立可达的 HTTP/3 UDP 端口，并设置匹配的页面 Origin。只启动上述服务不会自动完成这些配置；普通公网 HTTP 页面走兼容路径。
 
