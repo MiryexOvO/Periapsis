@@ -23,6 +23,7 @@ pub struct Config {
     pub key: PathBuf,
     pub name: String,
     pub resource: String,
+    #[serde(default)]
     pub stream_key: String,
     pub tokens: BTreeMap<String, String>,
     #[serde(skip)]
@@ -77,6 +78,11 @@ impl Config {
     }
     pub fn load(path: &Path) -> Result<Self, Error> {
         let mut c: Self = serde_json::from_slice(&private_config(path)?)?;
+        if c.stream_key.is_empty()
+            && c.tokens.get("PERI_PUBLISH_TOKEN").is_none_or(|v| v.is_empty())
+        {
+            return Err("missing publishing credential: expected stream_key or legacy tokens.PERI_PUBLISH_TOKEN".into());
+        }
         c.subscribe = c
             .tokens
             .get("PERI_SUBSCRIBE_TOKEN")
@@ -85,6 +91,10 @@ impl Config {
         Ok(c)
     }
     pub fn publish_key(&self) -> String {
+        // Preserve legacy credentials rather than silently rotating them during upgrade.
+        if self.stream_key.is_empty() {
+            return self.tokens.get("PERI_PUBLISH_TOKEN").cloned().unwrap_or_default();
+        }
         format!(
             "{:x}",
             Sha256::digest(
@@ -132,6 +142,55 @@ fn ask(label: &str, default: &str) -> Result<String, Error> {
     } else {
         v.trim().into()
     })
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+
+    fn legacy() -> serde_json::Value {
+        serde_json::json!({
+            "public":"127.0.0.1", "udp":4444, "external":4444,
+            "tcp":4455, "web_external":4455, "cert":"cert.der", "key":"key.key",
+            "name":"localhost", "resource":"live/av1",
+            "tokens":{"PERI_PUBLISH_TOKEN":"legacy-publish-credential-1234567890",
+                      "PERI_SUBSCRIBE_TOKEN":"legacy-subscribe-credential-1234567890"}
+        })
+    }
+
+    fn load(value: &serde_json::Value) -> Result<Config, Error> {
+        let mut file = tempfile::NamedTempFile::new()?;
+        file.write_all(&serde_json::to_vec(value)?)?;
+        Config::load(file.path())
+    }
+
+    #[test]
+    fn legacy_upgrade_preserves_credentials_and_file() {
+        let value = legacy();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let original = serde_json::to_vec(&value).unwrap();
+        file.write_all(&original).unwrap();
+        let cfg = Config::load(file.path()).unwrap();
+        assert_eq!(cfg.publish_key(), value["tokens"]["PERI_PUBLISH_TOKEN"].as_str().unwrap());
+        assert_eq!(cfg.subscribe, value["tokens"]["PERI_SUBSCRIBE_TOKEN"].as_str().unwrap());
+        assert_eq!(std::fs::read(file.path()).unwrap(), original);
+        assert_eq!(cfg.cert, PathBuf::from("cert.der"));
+    }
+
+    #[test]
+    fn explicit_stream_key_takes_precedence_over_legacy_token() {
+        let mut value = legacy();
+        value["stream_key"] = "new-stream-key".into();
+        let cfg = load(&value).unwrap();
+        assert_eq!(cfg.publish_key(), format!("{:x}", Sha256::digest(b"peri-stream-key-v1\0new-stream-key")));
+    }
+
+    #[test]
+    fn missing_publish_credential_fails_without_default_secret() {
+        let mut value = legacy();
+        value["tokens"].as_object_mut().unwrap().remove("PERI_PUBLISH_TOKEN");
+        assert!(load(&value).err().unwrap().to_string().contains("missing publishing credential"));
+    }
 }
 fn port(label: &str, default: u16) -> Result<u16, Error> {
     let n = ask(label, &default.to_string())?.parse()?;
@@ -248,6 +307,9 @@ pub fn manage(action: &str, args: &[String], path: &Path) -> Result<(), Error> {
             c.stream_key = ask("新推流码", "stream")?;
             c.save(path, false)?;
         }
+        "link" if c.stream_key.is_empty() => println!(
+            "Legacy publishing credential retained; use obs-token to generate the OBS token."
+        ),
         "link" => println!(
             "服务器 peri://{}\n推流码 {}",
             std::net::SocketAddr::new(c.public, c.external),
