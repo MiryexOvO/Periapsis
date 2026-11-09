@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 按对象集中发送候选
 
 状态：实验开关，默认关闭，线协议与媒体格式保持不变。

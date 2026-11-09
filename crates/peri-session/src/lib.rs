@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BSD-3-Clause
 //! Deterministic PERI capability selection, independent of transport and codecs.
 //! The responder calls `negotiate(local, remote)`; explicit network acknowledgement
 //! is required before a media session can become active.

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 原生分进程服务
 
 `peri` 提供独立 Relay、AV1 文件发布和接收录制。使用 QUIC/TLS 与实验 ALPN
@@ -8,7 +9,7 @@
 在项目根目录构建一次，再在各终端运行生成的程序：
 
 ```powershell
-cargo build -p peri-native --bin peri
+cargo build -p peri-relay --bin peri
 .\target\debug\peri.exe init dist/peri-local
 ```
 

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 频繁传输确认候选
 
 状态：实验能力，默认关闭。此策略调整原生QUIC连接的确认频率请求，不改变PERI控制协议、对象格式或媒体编码。

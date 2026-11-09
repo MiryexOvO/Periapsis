@@ -1,0 +1,25 @@
+[package]
+name = "peri-relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+publish.workspace = true
+
+[features]
+test-encoder = []
+
+[dependencies]
+peri-native = { path = "../peri-native" }
+peri-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "io-util", "sync", "signal", "process"] }
+rcgen = "=0.13.2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+peri-session = { path = "../peri-session" }

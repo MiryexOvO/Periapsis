@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 四路恢复接收候选
 
 状态：实验能力，CLI默认关闭。只改变本地恢复接收调度，控制协议和对象格式保持02。

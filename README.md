@@ -4,7 +4,7 @@
 
 PERI 提供原生发布、Relay 分发和浏览器观看网关。主播使用 Windows OBS 插件发布 AV1 + Opus；观众通过网页观看原画或共享 720p 转码。项目同时提供 Rust 媒体接口，供其他采集、编码和播放应用接入。
 
-当前阶段：**核心链路已打通，进入产品化验证。** 本轮弱网极限优化已收口，后续优先完善长时间运行、音画同步、断线恢复和安装升级。尚未发布稳定 SDK，也未完成公网生产验收。
+当前版本：**PERI 1.0.0，首个正式协议发布基线。** 稳定范围见 [协议规范](docs/PERI-1.0.md)，安装升级与已知限制见 [发布说明](docs/RELEASE-1.0.0.md)。协议稳定不代表任意弱网保证或稳定通用 SDK；实验性优化默认关闭。
 
 ## 工作方式
 
@@ -38,13 +38,13 @@ OBS + PERI 插件
 | 主动编码恢复 | 已验证 OBS 32.1.2 + NVENC AV1 + CBR；其他组合依赖周期关键帧 |
 | 应用接入 | Rust Publisher / Subscriber；OBS 专用 C ABI |
 
-PERI 原生协议使用实验 ALPN `peri-dev-02`。浏览器通过网关接入，不直接使用该 ALPN。当前没有与 MoQ / WebRTC 的标准互通或全面性能领先结论。
+PERI 1.0 保留历史 ALPN `peri-dev-02`，线封装保持 revision 2。浏览器通过网关接入，不直接使用该 ALPN。当前没有与 MoQ / WebRTC 的标准互通或全面性能领先结论。
 
 ## 开始使用
 
 ### 主播：安装 OBS 插件
 
-使用配套的 `PERI-OBS-Windows-x64.zip`，安装步骤见相邻插件仓库的 [OBS 安装说明](../obs-periapsis/README.md)。若只取得本仓库，需要另行取得插件包或配套插件源码。
+使用配套的 `PERI-OBS-1.0.0-Windows-x64.zip`（开发构建名为 `PERI-OBS-Windows-x64.zip`），安装步骤见相邻插件仓库的 [OBS 安装说明](../obs-periapsis/README.md)。若只取得本仓库，需要另行取得插件包或配套插件源码。
 
 1. 完全退出 OBS，解压插件包并运行 `Install-PERI.cmd`。升级时成套更新两个 DLL。
 2. 向服务器管理员取得服务器地址和推流码。
@@ -55,12 +55,14 @@ PERI 原生协议使用实验 ALPN `peri-dev-02`。浏览器通过网关接入�
 
 ### 管理员：构建与启动服务
 
+取得与服务器系统和架构匹配的预编译包时，先用 SHA256SUMS 校验并解压，在包目录执行 `./peri-webtransport setup`，再分别启动 `./peri-webtransport relay` 与 `./peri-webtransport watch`。两个程序须保持在同一目录。已有部署先按 [升级说明](docs/RELEASE-1.0.0.md) 备份，不必重新初始化。
+
 源码构建需要 Rust 1.91+；Windows 还需 MSVC C++ 工具与 Windows SDK。提供共享 720p 档位时，服务器需安装支持 AV1 解码、libx264 和 AAC 编码的 FFmpeg，可通过 `PERI_FFMPEG` 指定路径。
 
 在仓库根目录构建两个服务程序：
 
 ```sh
-cargo build --release --locked -p peri-native --bin peri -p peri-webtransport --bin peri-webtransport
+cargo build --release --locked -p peri-relay --bin peri -p peri-webtransport --bin peri-webtransport
 ```
 
 以下以 Linux 为例。首次部署运行交互初始化，填写主播可达地址、监听和外部端口。程序自动生成证书和随机凭据，无需手动准备证书：
@@ -123,7 +125,8 @@ Windows 对应程序位于 `target\release\`，文件名带 `.exe`。默认配�
 | `peri-types` | 共用类型与能力配置 |
 | `peri-session` | 会话协商逻辑 |
 | `peri-scheduler` | 通用调度原型 |
-| `peri-native` | 原生传输、媒体接口、Relay 与命令行工具 |
+| `peri-native` | BSD 客户端原生传输与媒体接口 |
+| `peri-relay` | AGPL Relay 与服务端命令行工具 |
 | `peri-obs` | OBS 发布接入的 Rust C ABI 库 |
 | `peri-webtransport` | 浏览器观看网关与内嵌播放器 |
 
@@ -147,3 +150,9 @@ pnpm run check
 - [原生命令行服务](docs/PERI-SERVICE-01.md)与[文件发布、播放工具](docs/PERI-PLAYBACK-01.md)
 
 开发脚本、测试源和历史实验均不属于对外稳定 SDK。
+
+## 版本、发布与许可证
+
+服务端运行 `peri --version` 和 `peri-webtransport --version` 确认版本。发布资产包含平台程序、配套源码与 `SHA256SUMS`；制作流程见 [RELEASING](docs/RELEASING.md)。Linux 也可按上述命令从锁定源码构建。
+
+采用分层授权：**OBS 插件 / 客户端 SDK：BSD-3-Clause；协议规范文档：Apache-2.0；Relay / 观看网关：AGPL-3.0-only**。具体目录边界见 [LICENSING](LICENSING.md)。第三方说明见 [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md)。

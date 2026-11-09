@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BSD-3-Clause
 //! Experimental PERI native subscriber/publisher over QUIC.
 //! 实验原生 PERI 发布订阅：独立 ALPN、控制封装、对象流与角色凭据 API。
 
@@ -33,7 +34,6 @@ mod receive;
 pub use feedback::{ReceiverReport, RecoveryRequest, trace};
 pub mod media;
 pub mod playback;
-pub mod relay;
 pub mod repair;
 mod wire;
 use peri_types::{Agreement, Hello};
@@ -43,6 +43,8 @@ use std::{fmt, time::Duration};
 use tokio::io::AsyncWriteExt;
 
 pub const ALPN: &[u8] = b"peri-dev-02";
+/// Stable release identifier; the historical ALPN and wire revision remain unchanged.
+pub const PROTOCOL_VERSION: &str = "1.0";
 pub const MAX_OBJECT_BYTES: usize = wire::MAX_PAYLOAD;
 
 #[derive(Debug)]

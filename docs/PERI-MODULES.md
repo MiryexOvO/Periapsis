@@ -1,6 +1,7 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 当前模块与第三方接入边界
 
-项目已经初步分层，但尚未形成稳定发布的第三方 SDK。工作区当前有六个 Rust crate，默认核心成员为四个，另有 peri-obs 与 peri-webtransport 接入组件；
+项目已经初步分层，但尚未形成稳定发布的第三方 SDK。工作区当前有七个 Rust crate，默认核心成员为四个，另有 peri-obs、peri-relay 与 peri-webtransport 组件；
 原生协议的大部分能力仍以 `peri-native` 内部模块提供，并非每个模块都独立成包。
 表中的“已有”描述当前实现，不代表标准化、生产就绪或独立实现互通。
 
@@ -17,12 +18,12 @@
 | 修复收发适配  | crates/peri-native/src/repair/transport.rs | 有界并发收片、确认、取消、重组与原对象回退                 | 内部实现；经Publisher/Subscriber供Relay和播放器使用，实验开关默认关闭 |
 | 线格式        | peri-native/src/wire.rs                    | 有界控制消息和对象头/FIN 校验                              | 内部模块；独立实现依据协议文档而非调用此模块                          |
 | 媒体层        | peri-native/src/media.rs                   | Catalog、Track、Frame、Publisher、Subscriber、DecodeBuffer | 公共 Rust API；调用方提供编码数据和真实解码确认                       |
-| 分发服务      | peri-native/src/relay.rs                   | 单资源接入、逐观看者帧数/字节配额、异步发送及反馈转发      | 公共库；不是完整资源管理平台                                          |
+| 分发服务      | peri-relay/src/lib.rs                   | 单资源接入、逐观看者帧数/字节配额、异步发送及反馈转发      | 公共库；不是完整资源管理平台                                          |
 | 鉴权          | peri-native/src/auth.rs                    | 发布/订阅角色凭据校验                                      | 公共 API；没有账号体系、令牌轮换服务                                  |
 | 反馈与测量    | peri-native/src/feedback.rs                | 关键帧请求、接收报告、有界邮箱与日志                       | 协议处理内部封装；请求/报告类型和方法公开                             |
 | 媒体策略      | peri-native/src/adaptation.rs              | 单观看端目标码率、切换调度                                 | 可选实验；默认关闭，不是固定线协议必选算法                            |
 | AV1 文件适配  | peri-native/src/av1.rs                     | 有界 IVF 导入和录制、探测元数据检查                        | 工具适配；不要求第三方使用 IVF                                        |
-| 命令与示例    | peri-native/src/bin/peri\*、examples       | 证书初始化、Relay、文件/实时发布、观看录制                 | 应用层，非 SDK 协议要求                                               |
+| 命令与示例    | peri-relay/src/bin/peri\*、examples       | 证书初始化、Relay、文件/实时发布、观看录制                 | 应用层，非 SDK 协议要求                                               |
 | 共享播放工具  | peri-native/src/playback.rs                | AV1解码、单调时钟、有界GOP调度                             | 公共可选工具；接入方可使用自有解码与呈现                              |
 | 实时测试源    | tests/fixtures/live-av1-worker.py                 | PyAV AV1合成编码源                                         | 内部验证工具，不属于SDK要求                                           |
 

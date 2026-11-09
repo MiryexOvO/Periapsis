@@ -8,3 +8,10 @@ Third-party components retain their original licenses and notices.
 This rewrite does not revoke licenses already granted for previously distributed
 copies and does not remove copies held by other people.
 See LICENSE for the complete AGPL text.
+
+## Subsequent layered licensing
+
+The current release uses BSD-3-Clause for the OBS plugin and client SDK,
+Apache-2.0 for the protocol documents, and AGPL-3.0-only for the Relay/server.
+The AGPL republication described above is a historical event, not a blanket
+license for the current tree. Consult the current component LICENSE files.

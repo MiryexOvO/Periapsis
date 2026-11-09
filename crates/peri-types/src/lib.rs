@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BSD-3-Clause
 //! Shared PERI application types; no network I/O.
 //! PERI 共用的应用层类型，不执行网络 I/O。
 

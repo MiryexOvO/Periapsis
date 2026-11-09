@@ -1,0 +1,16 @@
+{
+  "alpn": "peri-dev-02",
+  "preface": "5045524900020000",
+  "object": {
+    "hex": "000000000000002a00000000000003e800004e200100000003010203",
+    "sequence": 42,
+    "timestamp_us": 1000,
+    "duration_us": 20000,
+    "independent": true,
+    "payload": [1, 2, 3]
+  },
+  "control": {
+    "hex": "000000137b2274797065223a22706572692e61636b227d",
+    "json": {"type": "peri.ack"}
+  }
+}

@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 //! Bounded single-resource fan-out without transcoding.
 //! 单资源有界分发，不转码；积压订阅者断开，发布端不等待慢订阅者。
 
-use crate::{
+use peri_native::{
     Error, Session,
     media::{Catalog, Frame, FrameKind, Publisher, Subscriber},
 };
@@ -61,8 +62,8 @@ pub struct Relay {
     catalog: Catalog,
     limits: Limits,
     state: Mutex<State>,
-    requests: Mutex<Vec<crate::RecoveryRequest>>,
-    report: Mutex<Option<crate::ReceiverReport>>,
+    requests: Mutex<Vec<peri_native::RecoveryRequest>>,
+    report: Mutex<Option<peri_native::ReceiverReport>>,
     changed: tokio::sync::Notify,
 }
 struct Registration<'a> {
@@ -148,7 +149,7 @@ impl Relay {
             let frame = loop {
                 let requests = std::mem::take(&mut *self.requests.lock().expect("requests"));
                 for request in requests {
-                    crate::trace("relay_recovery", request);
+                    peri_native::trace("relay_recovery", request);
                     source.forward_recovery(request).await?;
                 }
                 let report = self.report.lock().expect("report").take();
@@ -188,7 +189,7 @@ impl Relay {
             // 发布端取消参考帧时，其后继可能已经在途；丢弃依赖缺口而不关闭资源。
             state.sequence = frame.sequence;
             drop(state);
-            crate::trace(
+            peri_native::trace(
                 "relay_ingest_gap",
                 serde_json::json!({"track":frame.track,"sequence":frame.sequence}),
             );
@@ -197,7 +198,7 @@ impl Relay {
         }
         drop(state);
         if frame.kind == FrameKind::Key {
-            crate::trace(
+            peri_native::trace(
                 "relay_key_received",
                 serde_json::json!({"sequence":frame.sequence,"pts_us":frame.timestamp_us,"bytes":frame.payload.len()}),
             );
@@ -303,8 +304,9 @@ impl Relay {
             // Keep one pending write; feedback wakeups never recreate its future or deadline.
             type Starting<'a> = std::pin::Pin<
                 Box<
-                    dyn std::future::Future<Output = (Item, Result<crate::media::MediaSend, Error>)>
-                        + Send
+                    dyn std::future::Future<
+                            Output = (Item, Result<peri_native::media::MediaSend, Error>),
+                        > + Send
                         + 'a,
                 >,
             >;
@@ -336,11 +338,11 @@ impl Relay {
                     // 控制反馈不等待下一帧或ACK完成；通知不增加队列和后台任务。
                     _ = feedback_changed.notified() => { continue; },
                     completed = sends.join_next(), if !sends.is_empty() => {
-                        let (track, sequence, kind, result) = completed.expect("pending send").map_err(crate::transport)?;
+                        let (track, sequence, kind, result) = completed.expect("pending send").map_err(|error| Error::Transport(error.to_string()))?;
                         match result {
                             Ok(()) => {},
                             Err(error @ (Error::Timeout | Error::ObjectAborted)) => {
-                                crate::trace("relay_send_failed", serde_json::json!({"viewer":id,"track":track,"sequence":sequence,"reason":if matches!(error, Error::Timeout) {"ack_deadline"} else {"peer_cancelled"}}));
+                                peri_native::trace("relay_send_failed", serde_json::json!({"viewer":id,"track":track,"sequence":sequence,"reason":if matches!(error, Error::Timeout) {"ack_deadline"} else {"peer_cancelled"}}));
                                 // A late failure from an older GOP must not invalidate a newer keyframe.
                                 if failure_requires_recovery(kind, sequence, recovery_points.get(&track).copied(), decoded_points.get(&track).copied()) {
                                     forwarded.retain(|(_, id)| *id != track);
@@ -384,7 +386,7 @@ impl Relay {
                                 });
                             },
                             Err(Error::Timeout | Error::ObjectAborted) => {
-                                crate::trace("relay_start_failed", serde_json::json!({"viewer":id,"sequence":frame.sequence}));
+                                peri_native::trace("relay_start_failed", serde_json::json!({"viewer":id,"sequence":frame.sequence}));
                                 forwarded.retain(|(_, track)| *track != frame.track);
                                 self.request_recovery(frame.track, id, frame.sequence);
                             },
@@ -405,7 +407,7 @@ impl Relay {
                     .all(|id| forwarded.contains(&(*id, frame.track)));
                 let now = Instant::now();
                 if deadline <= now || !ready || sends.len() >= 4 {
-                    crate::trace(
+                    peri_native::trace(
                         "relay_drop",
                         serde_json::json!({"viewer":id,"sequence":frame.sequence,"key":frame.kind == FrameKind::Key,"bytes":frame.payload.len(),"queue_ms":now.saturating_duration_since(item.received).as_millis(),"reason":if deadline <= now {"expired"} else if !ready {"dependency"} else {"inflight_limit"}}),
                     );
@@ -416,16 +418,14 @@ impl Relay {
                     continue;
                 }
                 if frame.kind == FrameKind::Key {
-                    crate::trace(
+                    peri_native::trace(
                         "relay_key_send",
                         serde_json::json!({"viewer":id,"sequence":frame.sequence,"bytes":frame.payload.len(),"budget_ms":(deadline-now).as_millis()}),
                     );
                 }
                 let publisher = &publisher;
                 starting = Some(Box::pin(async move {
-                    let result = publisher
-                        .start_send_until(&item.frame, crate::deadline::Deadline::at(deadline))
-                        .await;
+                    let result = publisher.start_send_at(&item.frame, deadline).await;
                     (item, result)
                 }));
             }
@@ -441,12 +441,12 @@ impl Relay {
             .catalog
             .tracks
             .iter()
-            .any(|entry| entry.id == track && entry.kind == crate::media::TrackKind::Video)
+            .any(|entry| entry.id == track && entry.kind == peri_native::media::TrackKind::Video)
         {
             let mut requests = self.requests.lock().expect("requests");
             enqueue_recovery(
                 &mut requests,
-                crate::RecoveryRequest::after(track, viewer, after_sequence),
+                peri_native::RecoveryRequest::after(track, viewer, after_sequence),
             );
             self.changed.notify_one();
         }
@@ -486,7 +486,7 @@ fn failure_requires_recovery(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::{Track, TrackKind};
+    use peri_native::media::{Track, TrackKind};
     #[test]
     fn late_ack_failure_cannot_invalidate_disposable_decoded_or_newer_gop() {
         assert!(!failure_requires_recovery(
@@ -737,7 +737,10 @@ mod tests {
 }
 
 // 同一订阅者的需求可合并，不能用一个订阅者的已恢复进度覆盖另一个人的故障。
-fn enqueue_recovery(requests: &mut Vec<crate::RecoveryRequest>, request: crate::RecoveryRequest) {
+fn enqueue_recovery(
+    requests: &mut Vec<peri_native::RecoveryRequest>,
+    request: peri_native::RecoveryRequest,
+) {
     if let Some(old) = requests
         .iter_mut()
         .find(|r| r.track == request.track && r.viewer == request.viewer)
@@ -760,17 +763,20 @@ mod recovery_queue_tests {
     #[test]
     fn scopes_cannot_coalesce_and_unknown_position_stays_conservative() {
         let mut queue = Vec::new();
-        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 1, 10));
-        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 2, 20));
+        enqueue_recovery(&mut queue, peri_native::RecoveryRequest::after(1, 1, 10));
+        enqueue_recovery(&mut queue, peri_native::RecoveryRequest::after(1, 2, 20));
         assert_eq!(queue.len(), 2);
-        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 1, 15));
+        enqueue_recovery(&mut queue, peri_native::RecoveryRequest::after(1, 1, 15));
         assert_eq!(queue[0].after_sequence, 15);
-        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 1, 0));
+        enqueue_recovery(&mut queue, peri_native::RecoveryRequest::after(1, 1, 0));
         assert_eq!(queue[0].after_sequence, 0);
-        enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, 1, 30));
+        enqueue_recovery(&mut queue, peri_native::RecoveryRequest::after(1, 1, 30));
         assert_eq!(queue[0].after_sequence, 0);
         for viewer in 3..=10 {
-            enqueue_recovery(&mut queue, crate::RecoveryRequest::after(1, viewer, 30));
+            enqueue_recovery(
+                &mut queue,
+                peri_native::RecoveryRequest::after(1, viewer, 30),
+            );
         }
         assert_eq!(queue.len(), 8);
         assert!(!queue.iter().any(|r| r.viewer == 10));

@@ -1,9 +1,10 @@
-#[path = "../examples/support/playback_check.rs"]
+use peri_relay::{Limits, Relay};
+#[path = "../../peri-native/examples/support/playback_check.rs"]
 mod playback_check;
 use peri_native::{ALPN, Error, Object};
 use peri_types::{Extension, Hello, PERI_VERSION, Profile};
 use std::{sync::Arc, time::Duration};
-#[path = "../examples/support/mod.rs"]
+#[path = "../../peri-native/examples/support/mod.rs"]
 mod support;
 use support::pair;
 
@@ -643,10 +644,7 @@ async fn protected_endpoint_enforces_bearer_role_and_rejects_anonymous_clients()
 
 #[tokio::test]
 async fn push_publish_relay_fans_out_and_late_join_waits_for_key() -> Result<(), TestError> {
-    use peri_native::{
-        media::{Catalog, Frame, FrameKind, Publisher, Subscriber, Track, TrackKind},
-        relay::{Limits, Relay},
-    };
+    use peri_native::media::{Catalog, Frame, FrameKind, Publisher, Subscriber, Track, TrackKind};
     let incoming = pair(ALPN).await?;
     let (source, ingest) = tokio::try_join!(
         peri_native::publish(incoming.outgoing.clone(), hello(), "live/push", BUDGET),

@@ -215,6 +215,17 @@ mod tests {
             payload: vec![1, 2, 3],
         };
         let bytes = encode_object(&object).unwrap();
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/peri-1.0.json")).unwrap();
+        let hex = |data: &[u8]| data.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(hex(&bytes), fixture["object"]["hex"].as_str().unwrap());
+        assert_eq!(hex(PREFACE), fixture["preface"].as_str().unwrap());
+        assert_eq!(crate::ALPN, fixture["alpn"].as_str().unwrap().as_bytes());
+        let mut control = Vec::new();
+        write_control(&mut control, &fixture["control"]["json"])
+            .await
+            .unwrap();
+        assert_eq!(hex(&control), fixture["control"]["hex"].as_str().unwrap());
         assert_eq!(&bytes[..8], &42_u64.to_be_bytes());
         assert_eq!(bytes[20], 1);
         assert_eq!(&bytes[21..25], &[0, 0, 0, 3]);

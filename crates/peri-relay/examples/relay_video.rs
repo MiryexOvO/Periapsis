@@ -1,12 +1,13 @@
 //! Reproducible AV1 encode -> native publish -> relay -> two receivers -> decode check.
 //! 可复现 AV1 编码、原生发布、双接收端转发与解码校验，仅用于本机验证。
 
+#[path = "../../peri-native/examples/support/mod.rs"]
 mod support;
 use peri_native::{
     ALPN,
     media::{Catalog, Frame, Publisher, Subscriber},
-    relay::{Limits, Relay},
 };
+use peri_relay::{Limits, Relay};
 use peri_types::{Hello, PERI_VERSION, Profile};
 use std::{path::Path, process::Command, sync::Arc, time::Duration};
 

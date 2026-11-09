@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 常驻编码与合并切换实验
 
 这一实验减少单观看端调节过程中的编码器重建，保留原策略作为对照。

@@ -1,6 +1,6 @@
 //! 修复适配器的真实QUIC测试；不把对象还原当作解码或弱网性能证据。
 //! Real QUIC adapter tests; object recovery is not decoding or network performance evidence.
-#[path = "../examples/support/mod.rs"]
+#[path = "../../peri-native/examples/support/mod.rs"]
 mod support;
 use peri_native::{
     ALPN, Error, Object, Session,
@@ -171,9 +171,9 @@ async fn media_adapter_crosses_relay_and_legacy_viewer() -> Result {
             Publisher::new(source, catalog(), BUDGET),
             Subscriber::new(ingest, BUDGET)
         )?;
-        let relay = Arc::new(peri_native::relay::Relay::new(
+        let relay = Arc::new(peri_relay::Relay::new(
             catalog(),
-            peri_native::relay::Limits::default(),
+            peri_relay::Limits::default(),
         )?);
         let hub = relay.clone();
         let ingest_task = tokio::spawn(async move { hub.ingest(ingest, BUDGET).await });
@@ -281,9 +281,9 @@ async fn relay_forwards_feedback_while_object_write_is_blocked() -> Result {
         Publisher::new(source, catalog(), BUDGET),
         Subscriber::new(ingest, BUDGET)
     )?;
-    let relay = Arc::new(peri_native::relay::Relay::new(
+    let relay = Arc::new(peri_relay::Relay::new(
         catalog(),
-        peri_native::relay::Limits::default(),
+        peri_relay::Limits::default(),
     )?);
     let hub = relay.clone();
     let ingest_task = tokio::spawn(async move { hub.ingest(ingest, BUDGET).await });

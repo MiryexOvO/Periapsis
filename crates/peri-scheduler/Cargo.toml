@@ -3,7 +3,7 @@ name = "peri-scheduler"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license = "BSD-3-Clause"
 publish.workspace = true
 
 [lints]

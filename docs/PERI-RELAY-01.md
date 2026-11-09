@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 原生发布与 Relay 实验
 
 `peri-native` 提供原生 QUIC 主动发布 API 和单资源 Relay 库。
@@ -73,7 +74,7 @@ viewers × (queued_frames + 4) × frame_bytes ≤ 128 MiB
 需要 Rust 与支持 libaom-av1 编码、AV1 解码的 FFmpeg：
 
 ```powershell
-cargo run -p peri-native --example relay_video
+cargo run -p peri-relay --example relay_video
 ```
 
 通过 `PERI_FFMPEG` 指定 FFmpeg 路径。示例在本进程内建立发布端、Relay 与两个接收端，

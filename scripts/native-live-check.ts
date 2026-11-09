@@ -55,7 +55,7 @@ async function decoded(path: string) {
   return output.split(/\r?\n/).filter(line => line.trim() && !line.startsWith("#")).map(line => line.split(",").at(-1)!.trim());
 }
 try {
-  await run("cargo", ["build", "--locked", "-p", "peri-native", "--features", "test-encoder", "--bin", "peri"], environment, true, 120000);
+  await run("cargo", ["build", "--locked", "-p", "peri-relay", "--features", "test-encoder", "--bin", "peri"], environment, true, 120000);
   const certDir = resolve(directory, "tls"), wrongDir = resolve(directory, "wrong-tls");
   await run(binary, ["init", certDir]); await run(binary, ["init", wrongDir]);
   const cert = resolve(certDir, "cert.der"), key = resolve(certDir, "key.key");

@@ -15,8 +15,8 @@ use peri_native::{
     av1::{IvfWriter, read_all_intra_ivf, read_gop_ivf},
     media::{Publisher, Subscriber},
     quinn,
-    relay::{Limits, Relay},
 };
+use peri_relay::{Limits, Relay};
 use peri_types::{Hello, PERI_VERSION, Profile};
 use std::{
     fs::{File, OpenOptions},
@@ -396,6 +396,15 @@ async fn main() -> Result<(), Error> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("--version" | "-V") if args.len() == 1 => {
+            println!(
+                "peri {} / protocol {} / ALPN {}",
+                env!("CARGO_PKG_VERSION"),
+                peri_native::PROTOCOL_VERSION,
+                String::from_utf8_lossy(ALPN)
+            );
+            Ok(())
+        }
         Some("init") if args.len() == 2 => init(&args[1]),
         Some("relay") if args.len() == 5 => relay(&args[1..]).await,
         Some("publish") if (7..=8).contains(&args.len()) => publish(&args[1..]).await,

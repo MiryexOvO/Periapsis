@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 原生 GOP 视频播放
 
 `peri publish --gop` 发布带依赖帧的 AV1 IVF；`peri play` 经独立 PERI/QUIC Relay 接收，

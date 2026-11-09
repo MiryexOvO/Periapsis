@@ -101,6 +101,15 @@ async fn forward(
 async fn main() -> Result<(), Error> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let action = args.first().map(String::as_str).unwrap_or("watch");
+    if matches!(action, "--version" | "-V") && args.len() == 1 {
+        println!(
+            "peri-webtransport {} / protocol {} / ALPN {}",
+            env!("CARGO_PKG_VERSION"),
+            peri_native::PROTOCOL_VERSION,
+            String::from_utf8_lossy(peri_native::ALPN)
+        );
+        return Ok(());
+    }
     if action == "--help" {
         println!(
             "peri-webtransport setup | configure | relay | watch | obs-token [--public-ip IP] [--public-port PORT] | watch-port | stream-key | link | viewer-config"

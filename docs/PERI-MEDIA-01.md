@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI media-01 实验媒体配置
 
 media-01 建立在 [原生对象线协议](PERI-WIRE-02.md) 之上，由 `peri_native::media` 实现。
@@ -83,7 +84,7 @@ Publisher/Subscriber 负责媒体结构与轨道校验，不执行实际解码�
 这是原生媒体格式和接收调度实现，不是完整播放器。已有原生主动发布和单资源 Relay，
 见 [原生发布与 Relay 实验](PERI-RELAY-01.md)。AV1 示例验证实际编码和接收后解码。
 原生 AV1 GOP 实时解码与本地调度见 [播放说明](PERI-PLAYBACK-01.md)。
-音画播放时钟映射、推流软件 SDK/插件、浏览器迁移与 MPQUIC 尚待完成。
+PERI 1.0 已提供 OBS 插件与浏览器音画播放；通用稳定 SDK 与 MPQUIC 不在首版范围。媒体线格式的稳定承诺见 [PERI 1.0](PERI-1.0.md)。
 `Subscriber::recv_live` 将对象读取超时和明确 RESET(1) 报告为 None，调用方须清理参考链并等待独立单元。
 其他解析及传输错误仍上报；目录始终严格读取。接收仍按调用顺序串行读流，每对象预算限制其潜在等待。
 单元测试中的媒体数据用于封装与调度验证；AV1 示例另做真实解码验证，尚无画质收益结论。

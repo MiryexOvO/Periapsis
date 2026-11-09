@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # 亚秒目标与测量口径
 
 PERI 的研发目标为低于 1000 ms，目标不等于现有实现已经达标。

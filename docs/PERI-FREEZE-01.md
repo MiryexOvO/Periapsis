@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 累计卡顿诊断
 
 此工具用于研发验收，测量合成源到软件帧输出；不测物理采集到屏幕。

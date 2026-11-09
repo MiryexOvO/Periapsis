@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BSD-3-Clause
 //! Bounded, dependency-aware media policy. Deadlines use local `Instant` values.
 //! This queue advises the application; congestion control remains with QUIC.
 //! 有界且感知解码依赖的媒体策略，使用本地单调时钟；拥塞控制仍由 QUIC 负责。

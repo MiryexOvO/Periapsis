@@ -1,0 +1,26 @@
+name: Release build
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91.0'
+      - run: cargo test --locked --workspace
+      - run: node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs
+      - run: cargo build --release --locked -p peri-relay --bin peri -p peri-webtransport --bin peri-webtransport -p peri-obs
+      - run: cargo fetch --locked
+      - run: node scripts/license-boundary-check.mjs
+      - run: node scripts/package-release.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PERI-Linux-x64
+          path: dist/releases/

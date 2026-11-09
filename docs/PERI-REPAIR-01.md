@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 有界对象修复内核 01
 
 状态：已实现修复内核和媒体层有界适配器，可选接入正式Relay和播放器。

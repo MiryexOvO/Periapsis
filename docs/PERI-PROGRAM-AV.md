@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 原生发布与观看
 
 主播安装 PERI Windows x64 插件。OBS C++ 输出模块将编码包写入有界环形缓冲，独立线程通过 C ABI 调用同目录的 Rust 动态库 `peri_obs.dll`，直接以 QUIC 发布。主播端只需 OBS 和插件包。服务器端部署 Rust Relay 与 Rust 观看网关。
@@ -11,7 +12,7 @@ Active keyframe recovery is supported for OBS 32.1.2 NVENC AV1 CBR publishing. A
 在 PERI 仓库执行：
 
 ```sh
-cargo build --release --locked -p peri-native --bin peri -p peri-webtransport --bin peri-webtransport
+cargo build --release --locked -p peri-relay --bin peri -p peri-webtransport --bin peri-webtransport
 ./target/release/peri-webtransport configure
 ./target/release/peri-webtransport link
 ```
@@ -52,8 +53,8 @@ export PERI_PAGE_ORIGIN=https://live.example.com
 
 Chrome / Edge 的原画使用 AV1 + Opus，720p60 使用 H.264 + AAC，两档都直接送入 VideoDecoder 与 AudioDecoder；音频由观众点击「开启声音」后通过 Web Audio 播放。观看页状态栏显示 WebTransport / WebCodecs。客户端绘制队列、解码积压与服务器广播保留量都有上限。每轨有序可靠，公网丢包仍可能造成等待。不能建立 WebTransport 或解码失败时，原画自动回退到 Rust WebM 封装，720p60 回退到 HLS。iPhone/iPad 默认使用 HLS。720p60 转码器限制为最高 1280×720、60 fps，视频目标 3.2 Mbps；LL-HLS 使用 250 毫秒碎片。
 
-## systemd
-
 HTTP 原画兼容播放在支持 AV1/Opus MediaSource 的浏览器上通过流式 fetch 及时追加 WebM 数据，减少纯色过场编码量变化造成的渐进下载缓冲停顿；其他浏览器保留原生 WebM 路径。此方式不要求 HTTPS，但不等同于 WebTransport。播放器保留停滞重连兜底，服务器流响应请求代理关闭缓冲；实际代理是否遵守取决于部署配置。
+
+## systemd
 
 安装两个发布二进制到 `/opt/peri/bin`。观看服务单元位于 `deploy/linux/peri-viewer.service`。用 `peri-webtransport viewer-config` 生成仅含公开连接参数的 JSON，保存为 `/etc/peri/viewer.json`。确保其中的 cert 指向服务用户可读的公开证书。将订阅凭据 `PERI_SUBSCRIBE_TOKEN` 单独放入 root 可读的 `/etc/peri/viewer.env`。按需在同一环境文件中配置上述 WebTransport 变量；为 DynamicUser 提供 TLS 私钥时宜通过 systemd LoadCredential 传入并设置相应读取路径。

@@ -698,7 +698,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "peri-native"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "peri-session",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "peri-obs"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "peri-native",
@@ -728,12 +728,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "peri-relay"
+version = "1.0.0"
+dependencies = [
+ "peri-native",
+ "peri-session",
+ "peri-types",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "peri-scheduler"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "peri-session"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "peri-types",
  "serde",
@@ -742,14 +756,14 @@ dependencies = [
 
 [[package]]
 name = "peri-types"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "peri-webtransport"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "getrandom 0.3.4",

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BSD-3-Clause
 //! In-process publisher for the OBS module. / OBS 插件内的 PERI 发布端。
 use base64::{
     Engine,

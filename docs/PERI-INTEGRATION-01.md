@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # 第三方 Rust 发布/接收接入
 
 当前公共 API 为实验接口，可以集成，尚未稳定发布。已有模块和缺口见[模块表](PERI-MODULES.md)。

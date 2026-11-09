@@ -218,7 +218,7 @@ impl Publisher {
     pub fn transport_stats(&self) -> crate::quinn::ConnectionStats {
         self.session.transport_stats()
     }
-    pub(crate) fn feedback_notification(&self) -> std::sync::Arc<tokio::sync::Notify> {
+    pub fn feedback_notification(&self) -> std::sync::Arc<tokio::sync::Notify> {
         self.session.feedback.changed.clone()
     }
     /// Send the immutable catalog before accepting media sends.
@@ -300,12 +300,17 @@ impl Publisher {
         }
         Ok(report)
     }
-    pub(crate) async fn start_send(
+    pub async fn start_send(&self, frame: &Frame, budget: Duration) -> Result<MediaSend, Error> {
+        self.start_send_until(frame, crate::deadline::Deadline::after(budget)?)
+            .await
+    }
+    /// Start sending against an absolute local deadline, including queueing and receipts.
+    pub async fn start_send_at(
         &self,
         frame: &Frame,
-        budget: Duration,
+        deadline: std::time::Instant,
     ) -> Result<MediaSend, Error> {
-        self.start_send_until(frame, crate::deadline::Deadline::after(budget)?)
+        self.start_send_until(frame, crate::deadline::Deadline::at(deadline))
             .await
     }
     pub(crate) async fn start_send_until(
@@ -314,30 +319,31 @@ impl Publisher {
         deadline: crate::deadline::Deadline,
     ) -> Result<MediaSend, Error> {
         match &self.repair {
-            Some(repair) => Ok(MediaSend::Repair(
+            Some(repair) => Ok(MediaSend(MediaSendInner::Repair(
                 repair
                     .start(self.session.clone(), frame, &self.catalog, deadline)
                     .await?,
-            )),
-            None => Ok(MediaSend::Raw(
+            ))),
+            None => Ok(MediaSend(MediaSendInner::Raw(
                 self.session
                     .start_send_until(&frame.to_object(&self.catalog)?, deadline)
                     .await?,
-            )),
+            ))),
         }
     }
 }
 // Relay继续按媒体对象追踪确认，分片不能冒充解码确认。
 // Relay tracks media object receipts; fragment ACKs are never decode receipts.
-pub(crate) enum MediaSend {
+pub struct MediaSend(MediaSendInner);
+enum MediaSendInner {
     Raw(crate::ObjectSend),
     Repair(crate::repair::transport::GroupSend),
 }
 impl MediaSend {
-    pub(crate) async fn finish(self) -> Result<(), Error> {
-        match self {
-            Self::Raw(send) => send.finish().await,
-            Self::Repair(send) => send.finish().await,
+    pub async fn finish(self) -> Result<(), Error> {
+        match self.0 {
+            MediaSendInner::Raw(send) => send.finish().await,
+            MediaSendInner::Repair(send) => send.finish().await,
         }
     }
 }
@@ -485,7 +491,7 @@ impl Subscriber {
         }
         Frame::from_object(self.session.recv_shared(budget).await?, &self.catalog)
     }
-    pub(crate) async fn recv_ingest_shared(&self, budget: Duration) -> Result<Frame, Error> {
+    pub async fn recv_ingest_shared(&self, budget: Duration) -> Result<Frame, Error> {
         if self.repair.is_some() {
             return self.recv_shared(budget).await;
         }

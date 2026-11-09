@@ -54,7 +54,7 @@ async function decoded(path: string) {
   return output.split(/\r?\n/).filter(line => line.trim() && !line.startsWith("#")).map(line => line.split(",").at(-1)!.trim());
 }
 try {
-  await run("cargo", ["build", "--locked", "-p", "peri-native", "--bin", "peri"], environment, true, 120000);
+  await run("cargo", ["build", "--locked", "-p", "peri-relay", "--bin", "peri"], environment, true, 120000);
   const source = resolve(directory, "source.ivf");
   await run(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=15", "-t", "2", "-c:v", "libaom-av1", "-strict", "-2", "-cpu-used", "8", "-g", "15", "-usage", "realtime", "-lag-in-frames", "0", "-auto-alt-ref", "0", "-crf", "40", "-b:v", "0", "-pix_fmt", "yuv420p", "-f", "ivf", source], environment, true, 120000);
   const certDir = resolve(directory, "tls"), wrongDir = resolve(directory, "wrong-tls");

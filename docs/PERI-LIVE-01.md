@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # PERI 实时 AV1 编码测试源
 
 `peri live` 在运行期间逐帧生成测试画面，由持续运行的 libaom AV1 编码器编码并通过原生 PERI 发布。
@@ -15,7 +16,7 @@ Windows x64 可使用以下脚本，从官方 PyPI 下载匹配当前 Python 的
 ```powershell
 python tests/fixtures/setup-live-python.py
 $env:PYTHONPATH = "$PWD\dist\live-python"
-cargo build -p peri-native --features test-encoder --bin peri
+cargo build -p peri-relay --features test-encoder --bin peri
 ```
 
 其他平台可使用 `python -m pip install --target dist/live-python av==16.1.0`，并相应设置 PYTHONPATH。
